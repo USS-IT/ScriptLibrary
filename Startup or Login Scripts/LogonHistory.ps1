@@ -20,7 +20,7 @@ function setupCheck{
     # If the script has not been downloaded locally, download it! It's required for the the scheduled task
     # to send the logfile in an email.
     If(-Not (Test-Path -Path $scriptPath -PathType Leaf)) {
-        $scriptLink = "<insert link here>"
+        $scriptLink = "https://raw.githubusercontent.com/USS-IT/ScriptLibrary/LogonHistory/Startup%20or%20Login%20Scripts/LogonHistory.ps1"
         Invoke-WebRequest -URI $scriptLink -OutFile $scriptPath -UseBasicParsing
     }
 
