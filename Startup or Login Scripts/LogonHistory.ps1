@@ -9,6 +9,12 @@
     .PARAMETER action
     Required. Either "Logon", "Logoff", or "Email" to specific what the script should do.
 
+    .PARAMETER from
+    Optional. From address can be specified if sending an email. Must be paired with "Email" as action to take effect.
+
+    .PARAMETER to
+    Optional. To address can be specified if sending an email. Must be paired with "Email" as action to take effect.
+
     .NOTES
     Version:        1.0
     Author:         LDG
@@ -19,7 +25,11 @@
 #-----------------------------------------------------------[Parameters]-----------------------------------------------------------
 param(
     [Parameter(Mandatory=$true, Position=0)]
-    [String]$action
+    [String]$action,
+
+    [mailaddress]$from=[mailaddress]'ussitcloudapps@jhu.edu',
+
+    [mailaddress]$to=[mailaddress]'ldibern1@jh.edu'
 )
 #---------------------------------------------------------[Initialisations]--------------------------------------------------------
 
@@ -38,8 +48,6 @@ $scriptPath=$folderPath + "\logonHistory.ps1"
 $todayLogPath=$folderPath + "\logonHistory - $(Get-Date -Date $today -UFormat "%m-%d-%Y") - $($env:computername).csv"
 $yesterdayLogPath=$folderPath + "\logonHistory - $(Get-Date -Date $yesterday -UFormat "%m-%d-%Y") - $($env:computername).csv"
 $smtpServer='smtp.johnshopkins.edu'
-$from=[mailaddress]'ussitcloudapps@jhu.edu'
-$to=[mailaddress]'ldibern1@jh.edu'
 
 #-----------------------------------------------------------[Functions]------------------------------------------------------------
 
@@ -51,7 +59,7 @@ $to=[mailaddress]'ldibern1@jh.edu'
 function setupCheck {
     # If the log folder path does not exist, create it!
     If(-Not (Test-Path -Path $folderPath)) {
-        New-Item -Path "C:\Windows\Logs\" -Name "USS-LogonHistory" -ItemType "directory"
+        New-Item -Path $folderPath -ItemType "directory"
     }
 
     # If the script has not been downloaded locally, download it! It's required for the the scheduled task
