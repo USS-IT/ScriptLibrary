@@ -29,7 +29,7 @@ param(
 
     [mailaddress]$from=[mailaddress]'ussitcloudapps@jhu.edu',
 
-    [mailaddress]$to=[mailaddress]'ldibern1@jh.edu'
+    [mailaddress]$to=[mailaddress]'ussitservices@jh.edu'
 )
 #---------------------------------------------------------[Initialisations]--------------------------------------------------------
 
@@ -65,7 +65,7 @@ function setupCheck {
     # If the script has not been downloaded locally, download it! It's required for the the scheduled task
     # to send the logfile in an email.
     If(-Not (Test-Path -Path $scriptPath -PathType Leaf)) {
-        $scriptLink = "https://raw.githubusercontent.com/USS-IT/ScriptLibrary/LogonHistory/Startup%20or%20Login%20Scripts/LogonHistory.ps1"
+        $scriptLink = "https://raw.githubusercontent.com/USS-IT/ScriptLibrary/main/Startup%20or%20Login%20Scripts/LogonHistory.ps1"
         Invoke-WebRequest -URI $scriptLink -OutFile $scriptPath -UseBasicParsing
     }
 
