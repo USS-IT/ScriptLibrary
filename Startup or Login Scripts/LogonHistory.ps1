@@ -43,7 +43,7 @@ $ErrorActionPreference = "Continue"
 
 $today=$(Get-Date)
 $yesterday=$((Get-Date).AddDays(-1))
-$folderPath="C:\Windows\Logs\USS-LogonHistory"
+$folderPath="C:\Logs\USS-LogonHistory"
 $scriptPath=$folderPath + "\logonHistory.ps1"
 $todayLogPath=$folderPath + "\logonHistory - $(Get-Date -Date $today -UFormat "%m-%d-%Y") - $($env:computername).csv"
 $yesterdayLogPath=$folderPath + "\logonHistory - $(Get-Date -Date $yesterday -UFormat "%m-%d-%Y") - $($env:computername).csv"
