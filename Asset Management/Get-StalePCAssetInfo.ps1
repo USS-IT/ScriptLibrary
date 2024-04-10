@@ -19,13 +19,15 @@ $stale_assets = $stale | foreach {
 			Action = $_.Action
 			"Asset Category" = $asset.category
 			"Asset Tag" = $asset.asset_tag
+			"Asset AD LastLogonTime" = $asset.'AD LastLogonTime'
+			"Asset SCCM LastActiveTime" = $asset.'SCCM LastActiveTime'
 			"Asset Status" = $asset.status
-			"Asset Checkboxes" = $checkboxes
 			"Asset Assigned" = $asset.assigned_to
 			"Asset Department" = $asset.Department
 			"Asset Form Factor" = $asset.'System Form Factor'
 			"Asset Manufacturer" = $asset.manufacturer
 			"Asset Model" = $asset.model
+			"Asset Checkboxes" = $checkboxes
 			"Asset Link" = $asset_url + $asset.id
 		}
 	} else {
@@ -37,13 +39,15 @@ $stale_assets = $stale | foreach {
 			Action = $_.Action
 			"Asset Category" = ""
 			"Asset Tag" = ""
+			"Asset AD LastLogonTime" = ""
+			"Asset SCCM LastActiveTime" = ""
 			"Asset Status" = ""
-			"Asset Checkboxes" = ""
 			"Asset Assigned" = ""
 			"Asset Department" = ""
 			"Asset Form Factor" = ""
 			"Asset Manufacturer" = ""
 			"Asset Model" = ""
+			"Asset Checkboxes" = ""
 			"Asset Link" = ""
 		}
 	}
