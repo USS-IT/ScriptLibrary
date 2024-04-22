@@ -11,6 +11,9 @@ if ($ussOnly -ne "N") {
 $results = $results | foreach { if ($_ -match "CN=([^,]+),") { $matches[1] } }
 
 if (-Not [string]::IsNullOrEmpty($outputFile)) {
+	if($outputFile -notlike "*\*") {
+		$outputFile = "{0}\{1}" -f ${ENV:OneDrive}, $outputFile
+	}
 	$results | Export-CSV -NoTypeInformation $outputFile
 	Write-Host "Exported to [$outputFile]"
 } else {
