@@ -10,6 +10,9 @@ try {
 $results = $results | Select Name,mail,DisplayName,Department,Company,extensionattribute2,distinguishedname
 
 if (-Not [string]::IsNullOrEmpty($outputFile)) {
+	if($outputFile -notlike "*\*") {
+		$outputFile = "{0}\{1}" -f ${ENV:OneDrive}, $outputFile
+	}
 	$results | Export-CSV -NoTypeInformation $outputFile
 	Write-Host "Exported to [$outputFile]"
 } else {
