@@ -11,6 +11,7 @@ if ([string]::IsNullOrWhitespace($inputCSV)) {
 if ([string]::IsNullOrWhitespace($outputCSV)) {
 	$outputCSV = $defaultOutputCSV
 }
+$adProps = "DisplayName","mail","Department","Company","extensionAttribute2"
 $emails = Import-CSV $inputCSV
 $notFoundCount = 0
 Write-Host ("Processing {0} entries..." -f $emails.Count)
@@ -20,13 +21,13 @@ $emails | % {
 	$isUsernameMatch=$false
 	if (-Not $Email.Contains('@')) {
 		$isUsernameMatch = $true
-		$user = Get-ADUser $Email -Properties DisplayName,mail,Department,Company -ErrorAction SilentlyContinue
+		$user = Get-ADUser $Email -Properties $adProps -ErrorAction SilentlyContinue
 	} else {
-		$user = Get-ADUser -LDAPFilter ("(|(UserPrincipalName=$Email)(proxyAddresses=smtp:$Email))") -Properties DisplayName,mail -ErrorAction SilentlyContinue
+		$user = Get-ADUser -LDAPFilter ("(|(UserPrincipalName=$Email)(mail=$Email)(proxyAddresses=smtp:$Email))") -Properties $adProps -ErrorAction SilentlyContinue
 		# If not found, check again using only the username
 		if (-Not [string]::IsNullOrEmpty($user.Name) -And $Email -match "(\w+)@" -And -Not [string]::IsNullOrWhitespace($matches[1])) {
 			try {
-				$user = Get-ADUser $matches[1] -Properties DisplayName,mail,Department,Company -ErrorAction SilentlyContinue
+				$user = Get-ADUser $matches[1] -Properties $adProps -ErrorAction SilentlyContinue
 			} catch {
 			}
 		}
@@ -37,19 +38,21 @@ $emails | % {
 		$DisplayName=$user.DisplayName
 		$Department=$user.Department
 		$Company=$user.Company
+		$Affiliation=$user.extensionAttribute2
 	} else {
 		$Department=""
 		$Company=""
+		$Affiliation=""
 		if ($isUsernameMatch) {
 			$JHED=$Email
-			$Email = "<USER NOT FOUND IN AD>"
-			$PrimaryEmail="<USER NOT FOUND IN AD>"
-			$DisplayName="<USER NOT FOUND IN AD>"
+			$Email = "<USER NOT FOUND>"
+			$PrimaryEmail="<USER NOT FOUND>"
+			$DisplayName="<USER NOT FOUND>"
 			
 		} else {
-			$JHED="<EMAIL/USER NOT FOUND IN AD>"
-			$PrimaryEmail="<EMAIL/USER NOT FOUND IN AD>"
-			$DisplayName="<EMAIL/USER NOT FOUND IN AD>"
+			$JHED="<EMAIL/USER NOT FOUND>"
+			$PrimaryEmail="<EMAIL/USER NOT FOUND>"
+			$DisplayName="<EMAIL/USER NOT FOUND>"
 		}
 		$notFoundCount++
 	}
@@ -60,6 +63,7 @@ $emails | % {
 		DisplayName=$DisplayName
 		Department=$Department
 		Company=$Company
+		Affiliation=$Affiliation
 	}
 } | Export-CSV -NoTypeInformation $outputCSV
 Write-Host("** {0} out of {1} users found in AD." -f ($emails.Count - $notFoundCount), $emails.Count)
