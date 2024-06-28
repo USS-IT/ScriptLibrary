@@ -1,6 +1,6 @@
 <#
     .SYNOPSIS
-    Search for primary and alias email addresses in AD and display service account mailbox group information, if applicable.
+    Search for primary and alias email addresses in AD and display access group information for a service account mailbox or distribution group, if applicable.
     
 	.DESCRIPTION
     Search for accounts with primary mail and aliases using given wildcard, showing information about any associated mail management (OLGroups) found.
@@ -71,17 +71,36 @@ function Find-ADEmailInfo {
 		$enabled = $null
 		$sam = $_.SamAccountName
 		$upn = $_.UserPrincipalName
+		$mail = $_.mail
+
 		if ($_.ObjectClass -eq "group") {
 			$group = $_
 		} else {
+			$groupfound = $false
 			# Attempt to find mailbox management groups in the format "grp-SamAccountName", ignoring errors
 			try { 
 				$group = Get-ADGroup "grp-$sam" -Properties DistinguishedName,ManagedBy,msExchCoManagedByLink -ErrorAction SilentlyContinue
-			} catch { 
+				if (-Not [string]::IsNullOrEmpty($group.ManagedBy) -Or $group.msExchCoManagedByLink.Count -gt 0 -Or $group.Members.Count -gt 0) {
+					$groupfound = $true
+				}
+			} catch {}
+			# Try again with format "grp-NameFromUPN"
+			if (-Not $groupfound) {
 				try { 
-					# Try again with format "grp-NameFromUPN"
 					$group = Get-ADGroup ("grp-{0}" -f ($upn -split "@" | Select -First 1)) -Properties DistinguishedName,ManagedBy,msExchCoManagedByLink -ErrorAction SilentlyContinue
 				} catch {}
+				if (-Not [string]::IsNullOrEmpty($group.ManagedBy) -Or $group.msExchCoManagedByLink.Count -gt 0 -Or $group.Members.Count -gt 0) {
+					$groupfound = $true
+				}
+			}
+			# Try one final time with format "grp-NameFromMail"
+			if (-Not $groupfound) {
+				try {
+					$group = Get-ADGroup ("grp-{0}" -f ($mail -split "@" | Select -First 1)) -Properties DistinguishedName,ManagedBy,msExchCoManagedByLink -ErrorAction SilentlyContinue
+				} catch {}
+				if (-Not [string]::IsNullOrEmpty($group.ManagedBy) -Or $group.msExchCoManagedByLink.Count -gt 0 -Or $group.Members.Count -gt 0) {
+					$groupfound = $true
+				}
 			}
 		}
 		# Collect OLGroup information, if it exists
