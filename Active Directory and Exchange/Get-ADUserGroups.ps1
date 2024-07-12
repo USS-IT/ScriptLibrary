@@ -15,13 +15,13 @@ if (-Not [string]::IsNullOrEmpty($user.distinguishedname)) {
 		if ($ussOnly -ne "N") {
 			$results = $results | where {$_.distinguishedname -like "*,OU=USS,*"}
 		}
-		$results = $results | Select Name,@{N="Parent Group"; Expression={ if($_ -in $user.memberof) { "" } else { "Y" } }} | Sort-Object -Property Name
+		$results = $results | Select Name,@{N="Parent Group"; Expression={ if($_ -in $user.memberof) { "" } else { "Y" } }},distinguishedname | Sort-Object -Property Name
 	} else {
 		$results = $user | Select -ExpandProperty memberof
 		if ($ussOnly -ne "N") {
 			$results = $results | where {$_ -like "*,OU=USS,*"}
 		}
-		$results = $results | foreach { if ($_ -match "CN=([^,]+),") { $matches[1] } } | Sort-Object
+		$results = $results | Select @{N="Name"; Expression= if ($_ -match "CN=([^,]+),") { $matches[1] } else { "" }},@{N="distinguishedname"; Expression={$_}} | Sort-Object -Property Name
 	}
 	
 	if (-Not [string]::IsNullOrEmpty($outputFile)) {
