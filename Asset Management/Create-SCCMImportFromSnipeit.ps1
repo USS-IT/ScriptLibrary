@@ -7,50 +7,69 @@ $sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers'
 $sccm_import_filename = 'Import.csv'
 # -- END CONFIG --
 
-$asset_tag = Read-Host "Enter the asset tag or hit ENTER if not known"
-if ([string]::IsNullOrWhitespace($asset_tag)) {
-	$asset_name = Read-Host "Enter the full or partial asset name, using * for wildcard (ex: *-HPSF8S3)"
-	if ([string]::IsNullOrWhitespace($asset_name)) {
-		Write-Host "** Error: No name given. Exiting."
-		Read-Host "Press enter to exit" | Out-Null
-		exit 1
+$assetCols = @('id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime')
+$assets = $null
+$outputRows = @()
+$getAssetChoice = "Y"
+$loopCount = 0
+while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -ne "N") {
+	$asset_tag = $null
+	$asset_name = $null
+	$asset_tag = Read-Host "Enter the asset tag or hit ENTER if not known"
+	if ([string]::IsNullOrWhitespace($asset_tag)) {
+		$readAsset["name"] = Read-Host "Enter the full or partial asset name, using * for wildcard (ex: *-HPSF8S3)"
+		if ([string]::IsNullOrWhitespace($asset_name)) {
+			Write-Host "** Error: No name or asset tag given."
+			# Exit out if first entry
+			if ($loopCount = 0) {
+				Read-Host "Press enter to exit" | Out-Null
+				exit 1
+			}
+		}
 	}
+
+	if($assets -eq $null) {
+		Write-Host "** Loading assets from [$asset_export_fp], please wait..."
+		$assets = Import-CSV $asset_export_fp
+		if ([string]::IsNullOrWhitespace(($assets | Select -First 1 -ExpandProperty asset_tag))) {
+			Write-Host "** ERROR: No valid assets found in export file. Aborting."
+			Read-Host "Press enter to exit" | Out-Null
+			exit 2
+		}
+	}
+
+	# Search for assets from file.
+	Write-Host("** Searching [{0}] assets" -f $assets.Count)
+	if (-Not [string]::IsNullOrWhitespace($asset_tag)) {
+		$asset = $assets | where {$_.asset_tag -eq $asset_tag}
+	} elseif (-Not [string]::IsNullOrWhitespace($asset_name)) {
+		$asset = $assets | where {$_.name -like $asset_name}
+	}
+
+	if ($asset.Count -gt 1 -Or [string]::IsNullOrWhitespace(($asset | Select -First 1 -ExpandProperty asset_tag))) {
+		$asset | Select $assetCols
+		Write-Host ("** Returned [{0}] results. Make sure you have the correct asset tag / name. Otherwise, please search in Snipe-It to match the correct system." -f ($asset | Measure-Object | Select -ExpandProperty count))
+	} else {
+		$asset_name = $null
+		$asset_guid = $null
+		$asset = $asset | Select -First 1
+		$asset | Select $assetCols
+		$asset_name = $asset | Select -ExpandProperty name
+		$asset_guid = $asset | Select -ExpandProperty 'SMBIOS GUID'
+		if ([string]::IsNullOrWhitespace($asset_name)) {
+			Write-Host "** ERROR: Invalid entry. Asset Name is blank."
+		} elseif ([string]::IsNullOrWhitespace($asset_guid)) {
+			Write-Host "** ERROR: Invalid entry. SMBIOS GUID is blank."
+		} else {
+			$outputRows += @('"{0}","{1}",' -f $asset_name,$asset_guid)
+			
+			$getAssetChoice = Read-Host "Search for another asset? (N/Y, Default: N)"
+		}
+	}
+	
+	$loopCount++
 }
-
-Write-Host "** Loading assets from [$asset_export_fp], please wait..."
-$assets = Import-CSV $asset_export_fp
-Write-Host("** Searching [{0}] assets" -f $assets.Count)
-
-if (-Not [string]::IsNullOrWhitespace($asset_tag)) {
-	$asset = $assets | where {$_.asset_tag -eq $asset_tag}
-} elseif (-Not [string]::IsNullOrWhitespace($asset_name)) {
-	$asset = $assets | where {$_.name -like $asset_name}
-}
-
-$cols = @('id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime')
-if ($asset.Count -gt 1 -Or [string]::IsNullOrWhitespace(($asset | Select -First 1 -ExpandProperty asset_tag))) {
-	$asset | Select $cols 
-	Write-Host ("** Returned [{0}] results. Make sure you have the correct asset tag / name. Otherwise, please search in Snipe-It to match the correct system." -f ($asset | Measure-Object | Select -ExpandProperty count))
-	Read-Host "Press enter to exit" | Out-Null
-	exit 2
-} else {
-	$asset = $asset | Select -First 1
-	$asset | Select $cols 
-	$asset_name = $asset | Select -ExpandProperty name
-	$asset_guid = $asset | Select -ExpandProperty 'SMBIOS GUID'
-	if ([string]::IsNullOrWhitespace($asset_name)) {
-		Write-Host "** ERROR: Asset Name is blank. Aborting."
-		Read-Host "Press enter to exit" | Out-Null
-		exit 3
-	}
-	if ([string]::IsNullOrWhitespace($asset_guid)) {
-		Write-Host "** ERROR: SMBIOS GUID is blank. Aborting."
-		Read-Host "Press enter to exit" | Out-Null
-		exit 4
-	}
-
-	$row = '"{0}","{1}",' -f $asset_name,$asset_guid
-
+if ($outputRows.Count -gt 0) {
 	# Save file to OneDrive Documents by default
 	if (Test-Path -Path "${ENV:ONEDRIVE}\Documents") {
 		$save_path = "${ENV:ONEDRIVE}\Documents"
@@ -59,17 +78,20 @@ if ($asset.Count -gt 1 -Or [string]::IsNullOrWhitespace(($asset | Select -First 
 	}
 
 	$choice = $null
-	If(Test-Path -Path "$save_path\$sccm_import_filename" -PathType Leaf) {
-		Write-Host ("** Import file already found at [{0}]" -f "$save_path\$sccm_import_filename")
+	$save_fp = "$save_path\$sccm_import_filename"
+	If(Test-Path -Path $save_fp -PathType Leaf) {
+		Write-Host ("** Import file already found at [{0}]" -f $save_fp)
 		$choice = Read-Host "** Append previously saved import file? (N/Y, Default: N)"
 	}
 	if($choice -ne "Y") {
-		Clear-Content -Path "$save_path\$sccm_import_filename" | Out-Null
-		Add-Content -Path "$save_path\$sccm_import_filename" -Value '"Name","SMBIOS GUID","MAC Address"'
+		Clear-Content -Path $save_fp | Out-Null
+		Add-Content -Path $save_fp -Value '"Name","SMBIOS GUID","MAC Address"'
 	}
-	Add-Content -Path "$save_path\$sccm_import_filename" -Value $row
-	Get-Content -Path "$save_path\$sccm_import_filename"
-	Write-Host "** Import file saved to [$save_path\$sccm_import_filename]"
+	foreach ($row in $outputRows) {
+		Add-Content -Path $save_fp -Value $row
+	}
+	Get-Content -Path $save_fp
+	Write-Host "** Import file saved to [$save_fp]"
 	Write-Host "** SCCM Import Path: [$sccm_import_path]"
 	$choice = $null
 	$choice = Read-Host ("** Copy [$sccm_import_filename] to SCCM Import Path? (Y/N, Default: Y)")
