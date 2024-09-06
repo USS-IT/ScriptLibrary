@@ -17,11 +17,11 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 	$asset_name = $null
 	$asset_tag = Read-Host "Enter the asset tag or hit ENTER if not known"
 	if ([string]::IsNullOrWhitespace($asset_tag)) {
-		$readAsset["name"] = Read-Host "Enter the full or partial asset name, using * for wildcard (ex: *-HPSF8S3)"
+		$asset_name = Read-Host "Enter the full or partial asset name, using * for wildcard (ex: *-HPSF8S3)"
 		if ([string]::IsNullOrWhitespace($asset_name)) {
 			Write-Host "** Error: No name or asset tag given."
 			# Exit out if first entry
-			if ($loopCount = 0) {
+			if ($loopCount -eq 0) {
 				Read-Host "Press enter to exit" | Out-Null
 				exit 1
 			}
