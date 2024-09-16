@@ -1,6 +1,21 @@
 # MJC 5-8-24
 # Creates import scripts for Snipe-It, SCCM, and JHARS from a Dell report (exported as CSV).
-param([string] $CSV)
+# Copies imported sheets to $IMPORTSHEET_COPYTO_FILEPATH
+param(
+	# The import sheet as a CSV file.
+	[Parameter(Position=0,Mandatory=$true)]
+	[string] $CSV,
+	
+	# Assume defaults for interactive prompts.
+	[switch] $NoPrompts
+)
+
+## -- START CONFIGURATION --
+
+# Filepath to copy successful import CSV.
+$IMPORTSHEET_COPYTO_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Dell\Import_Sheets"
+$SCCM_IMPORT_COPYTO_PATH = "\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers"
+$SNIPEIT_IMPORT_COPYTO_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt"
 
 # SnipeIt headers
 #Serial,Name,Manufacturer,Model,Purchasing date,Warranty Exp.,End of Life,Location,Category,System Form Factor,PC Checkboxes,SMBIOS GUID,Supplier,Order Number,Purchase Date
@@ -63,8 +78,15 @@ $CHASSIS_STYLE_MAP = @{
 	"SFF" = "Desktop"
 }
 
-$csvFile = Import-CSV $CSV
-Write-Host('[{0}] Loaded [{1}] assets from CSV file [{2}]...' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"),$csvFile.Count,$CSV) 
+## -- END CONFIGURATION --
+
+if (-Not (Test-Path $CSV -PathType Leaf)) {
+	Write-Error "Invalid or unknown CSV filepath [$CSV]"
+	return -1
+}
+
+$csvImport = Import-CSV $CSV
+Write-Host('[{0}] Loaded [{1}] assets from CSV file [{2}]...' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"),$csvImport.Count,$CSV) 
 
 function Format-GUID($guid) {
 	# Example: 4C4C4544-0050-5310-8046-B1C04F385333
@@ -74,9 +96,10 @@ function Format-GUID($guid) {
 function Format-MAC($mac) {
 	return ($mac -split '(..)' -ne '') -join ':'
 }
-	
-if($csvFile) {
-	$snipeit_import = $csvFile | foreach {
+
+# Only continue if the first entry is valid.
+if($csvImport -And -Not [string]::IsNullOrEmpty(($csvImport | Select -First 1 -ExpandProperty $SNIPEIT_HEADER_MAP.Serial))) {
+	$snipeit_import = $csvImport | foreach {
 		$row = $_
 		$o = [PSCustomObject]@{}
 		foreach($ecol in $SNIPEIT_HEADER) {
@@ -128,9 +151,24 @@ if($csvFile) {
 		$o
 	}
 	$snipeit_import | Export-CSV -NoTypeInformation -Force $SNIPEIT_IMPORT_FILEPATH
-	Write-Host('[{0}] Created Snipe-It import file [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SNIPEIT_IMPORT_FILEPATH)
 	
-	$sccm_import = $csvFile | foreach {
+	If (Test-Path $SNIPEIT_IMPORT_FILEPATH -PathType Leaf) {
+		Write-Host('[{0}] Created Snipe-It import file [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SNIPEIT_IMPORT_FILEPATH)
+		Get-Content $SNIPEIT_IMPORT_FILEPATH -TotalCount 2
+		Write-Host "..."
+		Write-Host('[{0}] Snipe-It import path: {1}' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SNIPEIT_IMPORT_COPYTO_PATH)
+		$choice = $null
+		if (-Not $NoPrompts) {
+			$choice = Read-Host ">> Copy Snipe-It import file to designated path? (Y/N)"
+		}
+		if ($choice -ne "N") {
+			if (Copy-Item -Path $SNIPEIT_IMPORT_FILEPATH -Destination $SNIPEIT_IMPORT_COPYTO_PATH -Force -Passthru) {
+				Write-Host('[{0}] Copied [{1}] to [{2}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SNIPEIT_IMPORT_FILEPATH, $SNIPEIT_IMPORT_COPYTO_PATH)
+			}
+		}
+	}
+	
+	$sccm_import = $csvImport | foreach {
 		$row = $_
 		$o = [PSCustomObject]@{}
 		foreach($ecol in $SCCM_HEADER) {
@@ -165,11 +203,26 @@ if($csvFile) {
 		$o
 	}
 	$sccm_import | Export-CSV -NoTypeInformation -Force $SCCM_IMPORT_FILEPATH
-	Write-Host('[{0}] Created SCCM import file [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SCCM_IMPORT_FILEPATH)
 	
-	if($csvFile -And $csvFile.Count -gt 0) {
+	If (Test-Path $SCCM_IMPORT_FILEPATH -PathType Leaf) {
+		Write-Host('[{0}] Created SCCM import file [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SCCM_IMPORT_FILEPATH)
+		Get-Content $SCCM_IMPORT_FILEPATH -TotalCount 2
+		Write-Host "..."
+		Write-Host('[{0}] SCCM import path: {1}' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SCCM_IMPORT_COPYTO_PATH)
+		$choice = $null
+		if (-Not $NoPrompts) {
+			$choice = Read-Host ">> Copy SCCM import file to designated path? (Y/N)"
+		}
+		if ($choice -ne "N") {
+			if (Copy-Item -Path $SCCM_IMPORT_FILEPATH -Destination $SCCM_IMPORT_COPYTO_PATH -Force -Passthru) {
+				Write-Host('[{0}] Copied [{1}] to [{2}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $SCCM_IMPORT_FILEPATH, $SCCM_IMPORT_COPYTO_PATH)
+			}
+		}
+	}
+	
+	if($csvImport -And $csvImport.Count -gt 0) {
 		Clear-Content -Path $JHARS_IMPORT_FILEPATH
-		$csvFile | foreach {
+		$csvImport | foreach {
 			$row = $_
 			foreach($ecol in $JHARS_MAC_COLUMNS) {
 				$val = $row.$ecol
@@ -183,6 +236,10 @@ if($csvFile) {
 		}
 		
 		Write-Host('[{0}] Created JHARS import file [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $JHARS_IMPORT_FILEPATH)
+		Write-Host('>> Please import the JHARS info manually using the bulk upload tool.')
+	}
+	
+	if (Copy-Item -Path $CSV -Destination $IMPORTSHEET_COPYTO_FILEPATH -Force -Passthru) {
+		Write-Host('[{0}] Copied import sheet [{2}] to [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $IMPORTSHEET_COPYTO_FILEPATH, $CSV)
 	}
 }
-
