@@ -39,6 +39,7 @@ $SCCM_HEADER = "Name", "SMBIOS GUID", "MAC Address"
 $SCCM_HEADER_MAP = @{
 	"SMBIOS GUID" = "UUID"
 	"MAC Address" = "Embedded MAC Address 1"
+	"Fallback MAC Address" = "Pass Through MAC"
 }
 
 # Snipe-It Import file info
@@ -197,6 +198,12 @@ if($csvImport -And -Not [string]::IsNullOrEmpty(($csvImport | Select -First 1 -E
 						} elseif ($ecol -eq "SMBIOS GUID" -And $val.Length -eq 32) {
 							$val = Format-GUID $val
 						}
+					# Fallback to passthrough MAC if embedded MAC is blank or doesn't exist
+					} elseif ($icol -eq "MAC Address") {
+						$val = $row."Fallback MAC Address"
+						if (-Not [string]::IsNullOrEmpty($val)) {
+							$val = Format-MAC $val
+						}
 					}
 				}
 			}
@@ -241,7 +248,7 @@ if($csvImport -And -Not [string]::IsNullOrEmpty(($csvImport | Select -First 1 -E
 		Write-Host('>> Please import the JHARS info manually using the bulk upload tool.')
 	}
 	
-	if (Copy-Item -Path $CSV -Destination $IMPORTSHEET_COPYTO_FILEPATH -Force -Passthru) {
-		Write-Host('[{0}] Copied import sheet [{2}] to [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $IMPORTSHEET_COPYTO_FILEPATH, $CSV)
+	if (Copy-Item -Path $CSV -Destination $IMPORTSHEET_COPYTO_PATH -Force -Passthru) {
+		Write-Host('[{0}] Copied import sheet [{2}] to [{1}]' -f (Get-Date).toString("yyyy/MM/dd HH:mm:ss"), $IMPORTSHEET_COPYTO_PATH, $CSV)
 	}
 }
