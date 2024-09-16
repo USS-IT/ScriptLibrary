@@ -45,7 +45,9 @@ $SCCM_HEADER_MAP = @{
 $SNIPEIT_IMPORT_FILEPATH = "Snipeit-Import.csv"
 
 # Not all columns are required.
-$SNIPEIT_HEADER = "Serial","Name","Manufacturer","Model","Purchasing date","Warranty Exp.","End of Life","Location","Category","System Form Factor","PC Checkboxes","SMBIOS GUID","Supplier","Order Number","LOM MAC Address","Pass-Through MAC Address"
+# TODO: Find out why creating new Suppliers is erroring.
+#$SNIPEIT_HEADER = "Serial","Name","Manufacturer","Model","Purchasing date","Warranty Exp.","End of Life","Location","Category","System Form Factor","PC Checkboxes","SMBIOS GUID","Supplier","Order Number","LOM MAC Address","Pass-Through MAC Address"
+$SNIPEIT_HEADER = "Serial","Name","Manufacturer","Model","Purchasing date","Warranty Exp.","End of Life","Location","Category","System Form Factor","PC Checkboxes","SMBIOS GUID","Order Number","LOM MAC Address","Pass-Through MAC Address"
 
 # Mapping supports multiple possible mappings as array value.
 # If an array, the first value found from a valid column will be used.
@@ -57,7 +59,7 @@ $SNIPEIT_HEADER_MAP = @{
 	"System Form Factor" = "Chassis Style"
 	"Purchasing Date" = "Order Date"
 	"SMBIOS GUID" = "UUID"
-	"Supplier" = "Company Name"
+	#"Supplier" = "Company Name"
 	"LOM MAC Address" = "Embedded MAC Address 1"
 	"Pass-Through MAC Address" = "Pass Through MAC"
 }
