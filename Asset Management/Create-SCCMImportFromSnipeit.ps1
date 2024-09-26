@@ -33,6 +33,12 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 
 	if($assets -eq $null) {
 		Write-Host "** Loading assets from [$asset_export_fp], please wait..."
+		# Check last modified time on export in case exporting has stopped.
+		$fileinfo = Get-Item $asset_export_fp
+		if ($fileinfo.LastWriteTime -is [DateTime] -And $fileinfo.LastWriteTime -lt (Get-Date).AddDays(-7)) {
+			Write-Warning "Asset export from Snipe-It is over 7 days old. Information may be out of date."
+		}
+		# Import file
 		$assets = Import-CSV $asset_export_fp
 		if ([string]::IsNullOrWhitespace(($assets | Select -First 1 -ExpandProperty asset_tag))) {
 			Write-Host "** ERROR: No valid assets found in export file. Aborting."
@@ -59,11 +65,16 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 		$asset | Select $assetCols
 		$asset_name = $asset | Select -ExpandProperty name
 		$asset_guid = $asset | Select -ExpandProperty 'SMBIOS GUID'
+		$asset_pccheckboxes = $asset | Select -ExpandProperty 'PC Checkboxes'
 		if ([string]::IsNullOrWhitespace($asset_name)) {
 			Write-Host "** ERROR: Invalid entry. Asset Name is blank."
 		} elseif ([string]::IsNullOrWhitespace($asset_guid)) {
 			Write-Host "** ERROR: Invalid entry. SMBIOS GUID is blank."
 		} else {
+			# Check if asset already exists in SCCM.
+			if ($asset_pccheckboxes -match "Exists in SCCM") {
+				Write-Warning "[$asset_name] already appears to exist in SCCM. Try PXE Boot or double-check SCCM."
+			}
 			# Search AD for computer if RSAT tools are installed.
 			try {
 				if (($adcomp = Get-ADComputer $asset_name -ErrorAction SilentlyContinue) -And -Not [string]::IsNullOrEmpty($adcomp.Name) -And -Not $adcomp.Enabled) {
