@@ -2,9 +2,12 @@
 # Intended to re-import machines that have fallen out of SCCM.
 
 # -- START CONFIG --
+# Where to look for exports from Snipe-It.
 $asset_export_fp = '\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Exports\assets_snipeit_latest.csv'
-$sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers'
+# What to name the import file.
 $sccm_import_filename = 'Import.csv'
+# Where to copy the import file.
+$sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers'
 # -- END CONFIG --
 
 $assetCols = @('id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime')
@@ -61,6 +64,14 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 		} elseif ([string]::IsNullOrWhitespace($asset_guid)) {
 			Write-Host "** ERROR: Invalid entry. SMBIOS GUID is blank."
 		} else {
+			# Search AD for computer if RSAT tools are installed.
+			try {
+				if (($adcomp = Get-ADComputer $asset_name -ErrorAction SilentlyContinue) -And -Not [string]::IsNullOrEmpty($adcomp.Name) -And -Not $adcomp.Enabled) {
+					Write-Warning ("[$asset_name] is currently disabled in AD. DN={0}" -f $adcomp.DistinguishedName)
+				}
+			} catch {
+			}
+			
 			$outputRows += @('"{0}","{1}",' -f $asset_name,$asset_guid)
 			
 			$getAssetChoice = Read-Host "Search for another asset? (N/Y, Default: N)"
