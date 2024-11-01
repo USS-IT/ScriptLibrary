@@ -65,7 +65,7 @@ function Find-ADEmailInfo {
 	$results | foreach-object { 
 		$group = $null
 		$olgroupname = $null
-		$olgroupmember = $null
+		$olgroupmembers = $null
 		$olgroupowner = $null
 		$olgroupcoowners = $null
 		$enabled = $null
@@ -106,7 +106,7 @@ function Find-ADEmailInfo {
 		# Collect OLGroup information, if it exists
 		if($group) {
 			$olgroupname = $group.Name;
-			$olgroupmem = (Get-ADGroupMember $group.DistinguishedName).Name -join "; "
+			$olgroupmembers = (Get-ADGroupMember $group.DistinguishedName).Name -join "; "
 			if ($group.ManagedBy) {
 				$olgroupowner = (Get-ADObject $group.ManagedBy -ErrorAction SilentlyContinue).Name
 			}
@@ -148,7 +148,7 @@ function Find-ADEmailInfo {
 			"OLGroup" = $olgroupname
 			"OLGroupManagedBy" = $olgroupowner
 			"OLGroupComanagedBy" = $olgroupcoowners
-			"OLGroupMembers" = $olgroupmem
+			"OLGroupMembers" = $olgroupmembers
 			"ProxyAddresses" = (($_.ProxyAddresses | foreach { if($_ -imatch "smtp:(.+)") { $matches[1] }}) -join "; ")
 			"DistinguishedName" = $_.DistinguishedName
 		} 
