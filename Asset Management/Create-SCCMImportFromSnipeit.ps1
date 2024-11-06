@@ -102,7 +102,7 @@ if ($outputRows.Count -gt 0) {
 	$choice = $null
 	$save_fp = "$save_path\$sccm_import_filename"
 	If(Test-Path -Path $save_fp -PathType Leaf) {
-		Write-Host ("** Import file already found at [{0}]" -f $save_fp)
+		Write-Host ("** Import file already found at [{0}]. Select option to append or replace this file." -f $save_fp)
 		$choice = Read-Host "** Append previously saved import file? (N/Y, Default: N)"
 	}
 	if($choice -ne "Y") {
