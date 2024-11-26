@@ -14,7 +14,7 @@ param(
 
 # Filepath to copy successful import CSV.
 $IMPORTSHEET_COPYTO_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Dell\Import_Sheets"
-$SCCM_IMPORT_COPYTO_PATH = "\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers"
+$SCCM_IMPORT_COPYTO_PATH = "\\win.ad.jhu.edu\data\sccmpack$\uss\Import-Computers"
 $SNIPEIT_IMPORT_COPYTO_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt"
 
 # SnipeIt headers

@@ -7,7 +7,7 @@ $asset_export_fp = '\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Expor
 # What to name the import file.
 $sccm_import_filename = 'Import.csv'
 # Where to copy the import file.
-$sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\hsa\Import-Computers'
+$sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\uss\Import-Computers'
 # -- END CONFIG --
 
 $assetCols = @('id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime')
