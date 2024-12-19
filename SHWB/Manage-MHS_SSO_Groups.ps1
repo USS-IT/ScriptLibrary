@@ -172,8 +172,13 @@ function Modify-ADSIGroupMember {
 	$userObj = [adsi]("LDAP://CN=$Username,$OU_USER")
 	If([string]::IsNullOrEmpty($userObj.Properties.name)) {
 		Write-Host "** [$username] not found in Active Directory or an error has occurred"
-	} else {		
-		Write-Host "Searching for group [$Group]..."
+	} else {
+		# Convert CN to Group Name if needed
+		$groupName = $Group
+		if($groupName -imatch "^CN=([^,]+),") {
+			$groupName = $Matches[1]
+		}
+		Write-Host "Searching for group [$groupName]..."
 		$groupObj = [adsi]("LDAP://$Group")
 		If([string]::IsNullOrEmpty($groupObj.Properties.name)) {
 			Write-Host "** [$Group] not found in Active Directory or an error has occurred"
@@ -260,6 +265,7 @@ while($doLoop) {
 				if($results.Count -ne 0) {
 					Write-Host ("** [$username] is already in the following groups granting SSO access to TimelyCare: {0}" -f ($results -join ", "))
 				} else {
+					Write-Host ("Confirmed [$username] is not already in one of the groups granting TimelyCare SSO access")
 					Write-Host " "
 					$ssoGroups = $adHocGroups
 					$count = 1
@@ -304,7 +310,7 @@ while($doLoop) {
 		}
 		
 		# Add user to SilverCloud SSO ad-hoc group
-		"3" {
+		"4" {
 			$results = $null
 			$allgroups = $SILVERCLOUD_ADGROUPS
 			$adHocGroups = $SILVERCLOUD_ADHOC_ADGROUPS
@@ -313,6 +319,7 @@ while($doLoop) {
 				if($results.Count -ne 0) {
 					Write-Host ("** [$username] is already in the following groups granting SSO access to SilverCloud: {0}" -f ($results -join ", "))
 				} else {
+					Write-Host ("Confirmed [$username] is not already in one of the groups granting SilverCloud SSO access")
 					Write-Host " "
 					$ssoGroups = $adHocGroups
 					$count = 1
