@@ -21,6 +21,7 @@ $ cd ScriptLibrary
 ```
 
 # Documentation
+Click on the arrow by the script name to see brief documentation and usage notes.
 
 ## Active Directory and Exchange
 
