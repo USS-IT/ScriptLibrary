@@ -32,7 +32,7 @@ Output the members of a group to CSV file or show it in a pop-up. This includes 
 
 <details>
 <summary>Find-ADEmailInfo.ps1</summary>
-Search for accounts with primary mail and aliases using given wildcard `*`, showing information about any associated mail management (OLGroups) found.
+Search for accounts with primary mail and aliases using given wildcard *, showing information about any associated mail management (OLGroups) found.
 	
 For example, `*communications*` will show accounts with the word "communications" included in their primary or alias email addresses.
 </details>
