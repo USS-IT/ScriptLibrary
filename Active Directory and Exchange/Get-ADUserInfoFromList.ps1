@@ -1,17 +1,34 @@
-# Input CSV file must have column header "User". This can be either an email address (including aliases), UPN, or username/JHED.
-# MJC 11-10-22
-$defaultInputCSV = "${ENV:OneDrive}\users.csv"
-$defaultOutputCSV = "${ENV:OneDrive}\results.csv"
+<#
+	.SYNOPSIS
+	Returns a list of users from AD given a CSV containing their Emails or JHEDs. The emails can be an alias.
+	
+	.DESCRIPTION
+	Returns a list of users from AD given a CSV containing their Emails or JHEDs. Input CSV file must have column header "User". This can be either an email address (including aliases), UPN, or username/JHED.
+	
+	.NOTES
+	The script will ask where the input and output CSVs should be located.
 
-$inputCSV = Read-Host "Input CSV filename (default: $defaultInputCSV)"
-$outputCSV = Read-Host "Output CSV filename (default: $defaultOutputCSV)"
+	Author: mcarras8
+	Created: 11-10-22
+	Last Updated: 2-26-25
+#>
+
+# Default output file locations.
+$DEFAULT_INPUT_CSV = "${ENV:OneDrive}\users.csv"
+$DEFAULT_OUTPUT_CSV = "${ENV:OneDrive}\results.csv"
+
+# Default OU to restrict searches.
+$USER_OU = "OU=PEOPLE,DC=win,DC=ad,DC=jhu,DC=edu"
+
+$inputCSV = Read-Host "Input CSV filename (default: $DEFAULT_INPUT_CSV)"
+$outputCSV = Read-Host "Output CSV filename (default: $DEFAULT_OUTPUT_CSV)"
 if ([string]::IsNullOrWhitespace($inputCSV)) {
-	$inputCSV = $defaultInputCSV
+	$inputCSV = $DEFAULT_INPUT_CSV
 }
 if ([string]::IsNullOrWhitespace($outputCSV)) {
-	$outputCSV = $defaultOutputCSV
+	$outputCSV = $DEFAULT_OUTPUT_CSV
 }
-$adProps = "DisplayName","mail","Department","Company","extensionAttribute2"
+$AD_PROPS = "DisplayName","mail","Department","Company","extensionAttribute2"
 $emails = Import-CSV $inputCSV
 $notFoundCount = 0
 Write-Host ("Processing {0} entries..." -f $emails.Count)
@@ -19,20 +36,36 @@ $emails | % {
 	$Email = $_.User
 	$user=$null
 	$isUsernameMatch=$false
+	$DisplayName=""
+	$Department=""
+	$Company=""
+	$Affiliation=""
 	if (-Not $Email.Contains('@')) {
 		$isUsernameMatch = $true
-		$user = Get-ADUser $Email -Properties $adProps -ErrorAction SilentlyContinue
+		$user = Get-ADUser $Email -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
 	} else {
-		$user = Get-ADUser -LDAPFilter ("(|(UserPrincipalName=$Email)(mail=$Email)(proxyAddresses=smtp:$Email))") -Properties $adProps -ErrorAction SilentlyContinue
+		$user = Get-ADUser -LDAPFilter ("(|(UserPrincipalName=$Email)(mail=$Email)(proxyAddresses=smtp:$Email)(proxyAddresses=SMTP:$Email))") -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
 		# If not found, check again using only the username
 		if (-Not [string]::IsNullOrEmpty($user.Name) -And $Email -match "(\w+)@" -And -Not [string]::IsNullOrWhitespace($matches[1])) {
 			try {
-				$user = Get-ADUser $matches[1] -Properties $adProps -ErrorAction SilentlyContinue
+				$user = Get-ADUser $matches[1] -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
 			} catch {
 			}
 		}
 	}
-	if (-Not [string]::IsNullOrEmpty($user.Name)) {
+	# Check to see if we hacve more than one result.
+	if ($user.Count -gt 1) {
+		if ($user[0].distinguishedname -eq $user[1].distinguishedname -And -Not [string]::IsNullOrEmpty($user[0].distinguishedname)) {
+			$user = $user[0]
+		} else {
+			Write-Warning("More than one result returned for [$Email], skipping: {0}, {1}" -f $user[0].Name, $user[1].Name)
+			
+			$JHED=$Email
+			$PrimaryEmail="<TOO MANY RESULTS ($($user.Count))>"
+			$DisplayName="<TOO MANY RESULTS ($($user.Count))>"
+		}
+	# Check to see if we have a valid entry.
+	} elseif (-Not [string]::IsNullOrEmpty($user.Name)) {
 		$JHED=$user.Name
 		$PrimaryEmail=$user.mail
 		$DisplayName=$user.DisplayName
@@ -40,12 +73,8 @@ $emails | % {
 		$Company=$user.Company
 		$Affiliation=$user.extensionAttribute2
 	} else {
-		$Department=""
-		$Company=""
-		$Affiliation=""
 		if ($isUsernameMatch) {
 			$JHED=$Email
-			$Email = "<USER NOT FOUND>"
 			$PrimaryEmail="<USER NOT FOUND>"
 			$DisplayName="<USER NOT FOUND>"
 			

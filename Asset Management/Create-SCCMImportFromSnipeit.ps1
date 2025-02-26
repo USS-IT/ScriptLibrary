@@ -1,6 +1,16 @@
-# Creates or appends an Import.csv file using data exported from Snipe-It.
-# Intended to re-import machines that have fallen out of SCCM.
-
+<#
+    .SYNOPSIS
+    Creates an import file for SCCM from a previous Snipe-It export.
+    
+	.DESCRIPTION
+    Creates an import file for SCCM from a previous Snipe-It export for re-importing a computer that's fallen out of SCCM, optionally copying over the file to the SCCM import path.
+	
+	.NOTES
+	Requires the following headers in the Snipe-It export: 'id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime'
+	
+    .NOTES
+    Author: mcarras8
+#>
 # -- START CONFIG --
 # Where to look for exports from Snipe-It.
 $asset_export_fp = '\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Exports\assets_snipeit_latest.csv'

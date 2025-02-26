@@ -1,6 +1,25 @@
-# MJC 5-8-24
-# Creates import scripts for Snipe-It, SCCM, and JHARS from a Dell report (exported as CSV).
-# Copies imported sheets to $IMPORTSHEET_COPYTO_FILEPATH
+<#
+    .SYNOPSIS
+    Creates import files for Snipe-It, SCCM, and JHARS from a Dell report exported as CSV.
+    
+	.DESCRIPTION
+    Creates import files for Snipe-It, SCCM, and JHARS from a Dell report exported as CSV. Can copy the files for SCCM and Snipe-It into their import paths.
+    
+	.PARAMETER CSV
+	The Dell import sheet as a CSV file. 
+	
+	.PARAMETER NoPrompts
+	Assume defaults for interactive prompts (allows automation).
+	
+	.NOTES
+	The Dell Import sheet must have the following headers: "Dell Service Tag", "Chassis Description", "Order Date", "Order Number", "Chassis Style", "UUID"
+	
+	It must also contain either "Embedded MAC Address 1" or "Pass Through MAC", or both.
+	
+    .NOTES
+	Created: 5-8-24
+    Author: mcarras8
+#>
 param(
 	# The import sheet as a CSV file.
 	[Parameter(Position=0,Mandatory=$true)]

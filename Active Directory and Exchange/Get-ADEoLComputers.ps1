@@ -1,12 +1,19 @@
-# Outputs information on EOL computers from AD.
-# Uses attributes synced from Sync-ADWithSOR.ps1.
-#
-# Requires: RSAT AD Tools
-#
-# MJC 4-22-24
+<#
+	.SYNOPSIS
+	Outputs information on EOL computers from AD. Requires RSAT Tools.
+	
+	.DESCRIPTION
+	Outputs information on EOL computers from AD. Requires RSAT Tools.
+	
+	.NOTES
+	EOLVER must be updated periodically in this script.
+	
+	Created: 4-22-24
+	Author: mcarras8
+#>
 
-# Build number to check
-$eolver=19044
+# Windows 11, 22H2
+$EOLVER=22631
 # CSV Filename to output results
 $csvFilename="USS EOL Computers $eolver or lower.csv"
 # Fields to output to CSV file, in order

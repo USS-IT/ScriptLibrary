@@ -1,6 +1,17 @@
-# Little snippets for getting real-time software info remotely queried through WMI. System must be on the Hopkins network.
-# Account used must have either local admin or remote admin rights on system.
-# Can sometimes fail with "RPC server not available" error depending on system configuration or if the computer is offline.
+<#
+	.SYNOPSIS
+	Uses WMI to query an online computer's installed software.
+	
+	.DESCRIPTION
+	Uses WMI to query an online computer's installed software. This should match Add/Remove Programs.
+	
+	.NOTES
+	Computer must be on the Hopkins network.
+	Must be run from an account with local admin or Remote WMI Admin privileges on remote machine.
+	Firewall must be set to allow WMI queries.
+	
+	Author: mcarras8
+#>
 
 # Example querying all software.
 $comp = Read-Host "Enter Computer Name"
@@ -12,7 +23,3 @@ If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -C
 }
 Get-WmiObject -Class Win32_Product -ComputerName $comp | Select Name, Version, Vendor, InstallDate, InstallLocation | Sort Name | Out-GridView 
 Read-Host "Press enter to exit" | Out-Null
-
-# Example with filtered out results.
-#$comp = "HW-AD-17C6613"
-#Get-WmiObject -Class Win32_Product -ComputerName $comp | where {$_.Name -like "Pulse*"} | Select Name, Version | Sort Name

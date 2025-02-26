@@ -1,7 +1,17 @@
-# Little snippets for getting real-time software info remotely queried through WMI. System must be on the Hopkins network.
-# Account used must have either local admin or remote admin rights on system.
-# Can sometimes fail with "RPC server not available" error depending on system configuration or if the computer is offline.
-
+<#
+	.SYNOPSIS
+	Uses WMI to query an online computer's disk info (free space, type, etc.)
+	
+	.DESCRIPTION
+	Uses WMI to query an online computer's disk info (free space, type, etc.)
+	
+	.NOTES
+	Computer must be on the Hopkins network.
+	Must be run from an account with local admin or Remote WMI Admin privileges on machine.
+	Firewall must be set to allow WMI queries.
+	
+	Author: mcarras8
+#>
 # Queries disk info.
 $comp = Read-Host "Enter Computer Name"
 # Check if computer is online (try up to three times).
