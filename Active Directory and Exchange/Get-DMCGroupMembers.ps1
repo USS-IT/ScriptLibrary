@@ -3,7 +3,7 @@
     Show DMC group memberships for given domain user.
     
 	.DESCRIPTION
-    Show DMC group memberships for given domain user.
+    Show DMC group memberships for given domain user. Does NOT require RSAT tools.
     
 	.PARAMETER JHED
     The JHED of the user to search for. Prompted if not given.

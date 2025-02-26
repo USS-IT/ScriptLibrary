@@ -1,5 +1,16 @@
-# Output a user's groups to a CSV file or show it in a pop-up.
-# MJC 6-9-23
+<#
+	.SYNOPSIS
+	Outputs a user's groups to a CSV file or show it in a pop-up. Can include all nested groups.
+	
+	.DESCRIPTION
+	Outputs a user's groups to a CSV file or show it in a pop-up. Can include all nested groups. 
+	
+	.NOTES
+	Requires RSAT tools.
+	
+	Created: 6-9-23
+	Author: mcarras8
+#>
 $username = Read-Host "Enter JHED"
 $outputFile = Read-Host "Output CSV file (leave blank to show in pop-up)"
 $ussOnly = Read-Host "USS OU Groups Only (Y/N, Default: Y)"

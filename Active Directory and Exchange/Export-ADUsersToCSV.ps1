@@ -1,5 +1,14 @@
-# Output the members of a group to a CSV file or show it in a pop-up.
-# MJC 6-8-23
+<#
+    .SYNOPSIS
+    Output the members of a group to CSV file or show it in a pop-up.
+    
+	.DESCRIPTION
+    Output the members of a group to CSV file or show it in a pop-up. This includes nested members.
+	
+    .NOTES
+	Created: 6-8-23
+    Author: mcarras8
+#>
 $groupname = Read-Host "Enter AD group name"
 $outputFile = Read-Host "Output to CSV file (leave blank to show in pop-up)"
 try {

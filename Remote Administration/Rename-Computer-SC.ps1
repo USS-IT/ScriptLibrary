@@ -1,4 +1,3 @@
-# Rename a computer using smartcard credentials.
 <#
     .SYNOPSIS
     Renames a remote computer using modern credentials.
@@ -19,7 +18,8 @@
 	Rename-Computer-SC.ps1 -ComputerName "Foobar" -NewName "Dingle"
 	
     .NOTES
-    Author: MJC 10-12-2022
+	Created: 10-12-2022
+    Author: mcarras8
 #>
 <#
 param(

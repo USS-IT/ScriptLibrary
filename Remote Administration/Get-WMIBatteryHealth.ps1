@@ -1,4 +1,17 @@
-# Returns current battery capacity using WMI query.
+<#
+	.SYNOPSIS
+	Uses WMI to query info on an online computer's battery health and current capacity.
+	
+	.DESCRIPTION
+	Uses WMI to query info on an online computer's battery health and current capacity.
+	
+	.NOTES
+	Computer must be on the Hopkins network.
+	Must be run from an account with local admin or Remote WMI Admin privileges on remote machine.
+	Firewall must be set to allow WMI queries.
+
+	Author: mcarras8
+#>
 $comp = Read-Host "Enter Computer Name"
 If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet)) {
 	Write-Host "[$comp] appears to be online, querying..."

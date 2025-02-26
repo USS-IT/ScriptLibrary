@@ -1,5 +1,14 @@
-# Quick script to cross-reference assets to be deleted with SOR (Snipe-It).
-# MJC 4-10-24
+<#
+    .SYNOPSIS
+    Compiles a report of assets to be deleted cross-referenced with our SOR (Snipe-It).
+    
+	.DESCRIPTION
+    Compiles a report of assets to be deleted cross-referenced with our SOR (Snipe-It). The asset report must have the "ComputerName" column.
+	
+    .NOTES
+	Created: 4-10-24
+    Author: mcarras8
+#>
 $stale = Import-CSV '.\StalePCs- to be deleted.csv'
 $assets = Import-CSV '\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Exports\assets_snipeit_latest.csv'
 $asset_url = 'https://jh-uss.snipe-it.io/hardware/'

@@ -1,3 +1,17 @@
+<#
+	.SYNOPSIS
+	Uses WMI to remotely enable any disabled WiFi adapters for a system online with ethernet.
+	
+	.DESCRIPTION
+	Uses WMI to remotely enable any disabled WiFi adapters for a system online with ethernet.
+	
+	.NOTES
+	Computer must be on the Hopkins network.
+	Must be run from an account with local admin or Remote WMI Admin privileges on remote machine.
+	Firewall must be set to allow WMI queries.
+
+	Author: mcarras8
+#>
 # MJC 1-26-23
 # Enable wireless adapter remotely using WMI.
 # Should return 0 if successful.

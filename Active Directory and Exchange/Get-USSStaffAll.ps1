@@ -1,4 +1,15 @@
-# Returns all staff in USS.
+<#
+	.SYNOPSIS
+	Outputs all USS staff.
+	
+	.DESCRIPTION
+	Outputs all staff and contractors in USS where company="USS" to a CSV file "uss_staff.csv" saved in OneDrive.
+	
+	.NOTES
+	Requires RSAT tools.
+	
+	Author: mcarras8
+#>
 
 $outCSV = "{$ENV:OneDrive}\uss_staff.csv"
 # Additionally search these groups.
