@@ -15,7 +15,7 @@
 	Author: mcarras8
 #>
 # Windows 11, 22H2
-$EOLVER=22631
+$EOLVER=22621
 
 $comp = Read-Host "Enter Computer Name"
 # Check if computer is online (try up to three times).

@@ -13,9 +13,9 @@
 #>
 
 # Windows 11, 22H2
-$EOLVER=22631
-# CSV Filename to output results
-$csvFilename="USS EOL Computers $eolver or lower.csv"
+$EOLVER=22621
+# The path to save the resulting CSV file.
+$savepath = "${ENV:OneDrive}\Documents\USS EOL Computers $eolver or lower.csv"
 # Fields to output to CSV file, in order
 $csvfields = @("Name","OperatingSystemVersion","Contact User","UserType","extensionAttribute9","Link","extensionAttribute1","extensionAttribute2","extensionAttribute3","extensionAttribute10")
 
@@ -39,8 +39,8 @@ $comps2 = $comps | where {$_.extensionAttribute5 -eq "Laptop" -Or $_.extensionAt
 
 # Output to file.
 try {
-	$comps2 | Select $csvfields | Export-CSV -NoTypeInformation $csvFilename
-	Write-Host("Results for {0} computers outputed to [$csvfilename]." -f $comps2.Count)
+	$comps2 | Select $csvfields | Export-CSV -NoTypeInformation $savepath
+	Write-Host("Results for {0} computers outputed to [$savepath]." -f $comps2.Count)
 } catch {
 	Write-Error $_
 }
