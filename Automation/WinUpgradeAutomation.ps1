@@ -247,7 +247,7 @@ if((Test-Path $IMPORT_INELIGIBLE_SYSTEMS_PATH -PathType Leaf)) {
 $skipped_systems = @()
 $counter = 0
 $processed_systems = foreach($comp in $comps) {
-	$contactuser = $comp.($PROP.AssignedUser)
+	$contactuser = $comp.($PROPS.AssignedUser)
 	$is_sharedsystem = $false
 	$is_assigned = $true
 	$is_incompatible = ($comp.Name -in $incompatible_systems.Name)
@@ -279,6 +279,7 @@ $processed_systems = foreach($comp in $comps) {
 			Write-Warning("[{0}] [{1}] - SKIPPING: No assigned user and CONTACT_ONLY_WHEN_ASSIGNED is set." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
 		} else {
 			if ([string]::IsNullOrEmpty($contactuser)) {
+				Write-Host("[{0}] [{1}] - No valid assigned user [{2}]. Checking other attributes. System Is Stale: {3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $is_stale)
 				$is_assigned = $false
 			} else {
 				# If the system is assigned to a user who doesn't have a valid username then assume its a shared system.
