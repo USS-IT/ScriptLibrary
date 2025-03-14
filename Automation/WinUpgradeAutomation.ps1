@@ -3,7 +3,7 @@
 	Sends out notifications for required Windows 11 upgrades for AD computer reporting lower than $EOLVER.
 	
 	.DESCRIPTION
-	Sends out notifications for required Windows 11 upgrades for AD computer reporting lower than $EOLVER. Also manages the group for toast notifications. Requires RSAT Tools.
+	Sends out notifications for required Windows 11 upgrades for AD computer reporting lower than $EOLVER. Also manages the group for toast notifications.
 
 	.PARAMETER ManageGroupOnly
 	Only manage the GPO notification group. Do not send any emails.
@@ -12,7 +12,10 @@
 	Only output results. Do not send emails or make any other changes.
 	
 	.NOTES
-	EOLVER must be updated periodically in this script.
+	Requirements:
+	* RSAT AD Tools
+	
+	EOLVER and UPGRADEVER must be updated periodically in this script. UPGRADEVER is only used in the report names.
 	
 	Email will be sent out to the assigned user if its valid (contains "@"). If it doesn't exist, then the first USS staff member not a member of USS IT will be used instead, searching LastLogonUser then Primary Users in that order.
 	
