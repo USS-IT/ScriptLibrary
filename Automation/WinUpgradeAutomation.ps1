@@ -107,7 +107,7 @@ $IMPORT_INELIGIBLE_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Report
 $EXPORT_ALL_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems.csv"
 $EXPORT_SKIPPED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_skipped.csv"
 $EXPORT_PROCESSED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_with_contact.csv"
-$EXPORT_EMAILED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_emailed_systems.csv"
+$EXPORT_EMAILED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_emailed.csv"
 
 # Path and prefix for the Start-Transcript logfiles.
 $LOGFILE_PATH = ".\Logs"
