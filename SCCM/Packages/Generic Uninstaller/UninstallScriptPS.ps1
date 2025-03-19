@@ -6,10 +6,16 @@
 	Attempts to silently uninstall software given its name from the registry. Usually this will be the same name as Add/Remove Programs.
     
 	.PARAMETER SoftwareName
-	The software name to uninstall (Required). This should be the same as the one from Add/Remove Programs. Can be a partial, in which case it will attempt to uninstall the first match found. 
+	The display name of the software to uninstall (Required). This should be the same as the one from Add/Remove Programs. Can be a partial, in which case it will attempt to uninstall the first match found. 
 	
+	.PARAMETER Publisher
+	Optional publisher to match along with display name. This can be partial.
+
+	.PARAMETER Version
+	Optional version to match. This is always an exact match.
+
 	.PARAMETER ExactMatch
-	Only accept exact matches for the given software name.
+	Only accept exact matches for the given software and publisher.
 	
 	.PARAMETER Parameters
 	Optional parameters added to what's given to the installer. Note if it's an EXE that's not MsiExec, it will assume an InstallShield with default additional parameters of "-uninst","-s". Use -OverrideParameters if you need to override these.
@@ -43,7 +49,7 @@
 	Make sure to test the uninstall outside of SCCM in case there's an uncaught prompt. If you still see a prompt, call the script using -OutputOnly to see what the parameters are. Then try opening up an admin command prompt and use common parameters like "setup.exe -?" or "setup.exe /?" to see if it displays a list of parameters (where setup.exe is the uninstaller filename). If that doesn't work, check online for any documentation on the uninstaller.
 
 	Author: mcarras8
-	Version: 1.0
+	Version: 1.1
 #>
 
 param(
@@ -51,6 +57,10 @@ param(
 	[parameter(Mandatory=$true, Position=0)]
 	[string] $SoftwareName,
 	
+	[string] $Publisher,
+
+	[string] $Version,
+
 	[switch] $ExactMatch,
 	
 	[string[]] $Parameters,
@@ -71,11 +81,13 @@ param(
 $_scriptName = split-path $PSCommandPath -Leaf
 
 # Check 32-bit, then 64-bit registry nodes.
-$installKey = gci "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ($ExactMatch -And $_ -eq $SoftwareName) -Or (-Not $ExactMatch -And $_ -match $SoftwareName) }
+$installLocation = $null
+$uninstallString = $null
+$installKey = gci "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
 $installLocation = $installKey | Select -ExpandProperty InstallLocation
 $uninstallString = $installKey | Select -ExpandProperty UninstallString
 if ([string]::IsNullOrWhitespace($uninstallString)) {
-	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ($ExactMatch -And $_ -eq $SoftwareName) -Or (-Not $ExactMatch -And $_ -match $SoftwareName) }
+	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
 	$installLocation = $installKey | Select -ExpandProperty InstallLocation
 	$uninstallString = $installKey | Select -ExpandProperty UninstallString
 	if ([string]::IsNullOrWhitespace($uninstallString)) {
@@ -83,8 +95,11 @@ if ([string]::IsNullOrWhitespace($uninstallString)) {
 	}
 }
 
-Write-Host "[$_scriptname] uninstallString = [$uninstallString]"
-Write-Host "[$_scriptname] installLocation = [$installLocation]"
+Write-Host "[$_scriptname] DisplayName = [$($installKey.DisplayName)]"
+Write-Host "[$_scriptname] Publisher = [$($installKey.Publisher)]"
+Write-Host "[$_scriptname] DisplayVersion = [$($installKey.DisplayVersion)]"
+Write-Host "[$_scriptname] UninstallString = [$uninstallString]"
+Write-Host "[$_scriptname] InstallLocation = [$installLocation]"
 If (-Not $OutputOnly) {
 	# Get MSI path and parameters.
 	$msiGUID = $null
