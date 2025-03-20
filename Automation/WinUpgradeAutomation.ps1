@@ -136,7 +136,7 @@ $LOGFILE_ROTATE_DAYS = 90
 	"Disabled" - Disabled account
 	
 	.NOTES
-	Saves a cache to $_ADUSER_TYPES.
+	Saves a cache to $_ADUSERS.
 #>
 $_ADUSERS = @{}
 function Get-ADAccountType {
