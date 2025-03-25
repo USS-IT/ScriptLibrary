@@ -1,7 +1,15 @@
-# MJC 3-24-23
-# Shows a toast notification if the version is equal or older than $EOLVER.
-# Must be run under the user's context.
-$EOLVER=19042
+<#
+	.SYNOPSIS
+	Shows a toast notification if the version is equal or older than $EOLVER.
+	
+	.DESCRIPTION
+	Shows a toast notification if the version is equal or older than $EOLVER. Must be run under the user's context.
+	
+	.NOTES
+	3-24-23 mcarras8
+#>
+# -- START CONFIGURATION --
+$EOLVER=22621
 # Link for custom button which redirects to given URL.
 # NOTE: THIS URL must be url-encoded!
 # Add-Type -AssemblyName System.Web
@@ -14,7 +22,14 @@ $TOAST_TITLE="Alert from USS IT"
 # {0} will display the current Windows build #.
 # NOTE: Max length of TOAST_TEXT cannot exceed ~175-185 characters.
 $TOAST_TEXT="The version of Windows on your computer requires an upgrade to avoid being blocked by Central IT. Please click on the $TOAST_CLICKABLE_LINK_TEXT button for more info."
+# The amount of GB required for the upgrade.
+$UPGRADE_SPACE_REQUIRED_GB = 23
+# The version of the toast that will show when the computer reports lower than $UPGRADE_SPACE_REQUIRED_GB.
+# {0} will display the amount of free space.
+$TOAST_TEXT_LOWSPACE = "Your computer does not have enough free space for a required upgrade. Please click on the $TOAST_CLICKABLE_LINK_TEXT button and see the Troubleshooting section for more info."
+# -- END CONFIGURATION --
 
+# -- START FUNCTIONS --
 function Show-Toast {
 	[cmdletbinding(DefaultParametersetName='None')]
 	Param (
@@ -107,13 +122,29 @@ function Show-Toast {
 	}
 	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($LauncherID).Show($Toast)
 }
-
-If($TOAST_TEXT.Length -gt 175) {
-	Write-Warning "TOAST_TEXT is too long, text may be truncated"
-}
+# -- END FUNCTIONS --
 
 # Grab version from registry.
 $ver = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).CurrentBuild
 if (-Not [string]::IsNullOrWhitespace($ver) -And $ver -le $EOLVER) {
-	Show-Toast -Text ($TOAST_TEXT -f $ver) -ShowSnoozeTimer -ClickableLink $TOAST_CLICKABLE_LINK -ClickableLinkText $TOAST_CLICKABLE_LINK_TEXT
+	$toastmsg = ($TOAST_TEXT -f $ver)
+	# Display a different message if computer is low on free space.
+	try {
+		if (-Not [string]::IsNullOrWhitespace($TOAST_TEXT_LOWSPACE)) {
+			$freespace = Get-Volume -DriveLetter (${ENV:SYSTEMDRIVE} -replace ":","") | Select -ExpandProperty SizeRemaining
+			if ($freespace -ne $null) {
+				$freespace = [math]::round($freespace /1Gb, 2)
+				if ( $freespace -le $UPGRADE_SPACE_REQUIRED_GB) {
+					$toastmsg = ($TOAST_TEXT_LOWSPACE -f $freespace)
+				}
+			}
+		}
+	} catch {}
+	
+	If($toastmsg.Length -gt 175) {
+		Write-Warning "Toast text is > 175 characters, text may be truncated"
+	}
+
+	# Show a dismissable toast notification with a clickable link for the current user.
+	Show-Toast -Text $toastmsg -ShowSnoozeTimer -ClickableLink $TOAST_CLICKABLE_LINK -ClickableLinkText $TOAST_CLICKABLE_LINK_TEXT
 }
