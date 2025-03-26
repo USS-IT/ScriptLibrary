@@ -243,6 +243,7 @@ $processed_systems = foreach($comp in $comps) {
 				[PSCustomObject]@{
 					Name=$comp.Name
 					AssetTag=$comp.($COMP_PROPS.AssetTag)
+					AssignedUser=$comp.($COMP_PROPS.AssignedUser)
 					FormFactor=$comp.($COMP_PROPS.FormFactor)
 					LastLogonDate=$lastlogondate
 					IsIncompatible=$is_incompatible
@@ -335,6 +336,7 @@ $processed_systems = foreach($comp in $comps) {
 			[PSCustomObject]@{
 				Name=$comp.Name
 				AssetTag=$comp.($COMP_PROPS.AssetTag)
+				AssignedUser=$comp.($COMP_PROPS.AssignedUser)
 				FormFactor=$comp.($COMP_PROPS.FormFactor)
 				LastLogonDate=$lastlogondate
 				IsIncompatible=$is_incompatible
