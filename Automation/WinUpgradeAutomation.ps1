@@ -64,8 +64,11 @@ $COMP_PROPS = @{
 	"FormFactor"="extensionAttribute5"
 	"LastSyncDate"="extensionAttribute8"
 }
-# Array of company/companies to limit when searching for users in other fields.
+# Array of company/companies users must be a part of when searching for alternate contacts in the LastLogonUser or PrimaryUsers fields.
 $CONTACTUSER_COMPANIES = @("JHU; University Student Services")
+# If given, contact users must be a member of the given groups to be considered valid. This includes the assigned user field.
+# If this is set, it should include the main sync group for the SOR.
+$CONTACTUSER_INCLUDE_GROUPS = @("USS-IT-SnipeItUsersAll")
 # Array of group(s) containing members of IT.
 # They will only be contacted if there's no other valid contact users.
 $CONTACTUSER_EXCLUDE_ITGROUPS = @("USS-IT-JHEDs")
@@ -202,7 +205,16 @@ $comps | Select $selectarray | Export-CSV -NoTypeInformation -Force $EXPORT_ALL_
 Write-Host("[{0}] Exported {1} systems requiring Windows 11 upgrade collected from AD to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count, $EXPORT_ALL_SYSTEMS_PATH)
 
 # Get excluded contact users.
+# These should be accountname only (not UPN/DN).
 $itusers = $CONTACTUSER_EXCLUDE_ITGROUPS | % { Get-ADGroupMember $_ -Recursive } | Select -ExpandProperty Name -Unique
+
+# Get included contact users.
+# These should be DN only.
+$include_users = $null
+if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
+	Write-Host("[{0}] Collecting AD group members to include from {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($CONTACTUSER_INCLUDE_GROUPS -join ", "))
+	$include_users = $CONTACTUSER_INCLUDE_GROUPS | % { Get-ADGroupMember $_ -Recursive } | Select -ExpandProperty distinguishedname -Unique
+}
 
 # Import a previously exported list of all incompatible systems.
 # We'll check against this and set the IsIncompatible flag if it's listed here.
@@ -228,33 +240,23 @@ $processed_systems = foreach($comp in $comps) {
 	}
 	$assettag = $comp.($COMP_PROPS.AssetTag)
 	$link_url = $SORURL_ASSETTAG + $assettag
+	$skip_reason = $null
 	Write-Verbose("[{0}] [{1}] Initial contact user: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 	if ($contactuser -match "@") {
 		try {
 			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
 			Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
+			if (($include_users | Measure).Count -gt 0 -And $aduser.distinguishedname -notin $include_users) {
+				Write-Warning("[{0}] [{1}] Contact user [{2}] not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+				$contactuser = $null
+			}
 		} catch {
 			Write-Error $_
 			$error_count++
 		}
 	} else {
 		if ([string]::IsNullOrEmpty($contactuser) -And $CONTACT_ONLY_WHEN_ASSIGNED) {
-			$skipped_systems += @(
-				[PSCustomObject]@{
-					Name=$comp.Name
-					AssetTag=$comp.($COMP_PROPS.AssetTag)
-					AssignedUser=$comp.($COMP_PROPS.AssignedUser)
-					FormFactor=$comp.($COMP_PROPS.FormFactor)
-					LastLogonDate=$lastlogondate
-					IsIncompatible=$is_incompatible
-					IsShared=$null
-					IsAssigned=$false
-					IsStale=$is_stale
-					OS=$comp.operatingsystemversion
-					SkippedReason="No Assigned User"
-					Link=$link_url
-				}
-			)
+			$skip_reason = "No Assigned User"
 			Write-Warning("[{0}] [{1}] - SKIPPING: No assigned user and CONTACT_ONLY_WHEN_ASSIGNED is set." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
 		} else {
 			if ([string]::IsNullOrEmpty($contactuser)) {
@@ -288,7 +290,12 @@ $processed_systems = foreach($comp in $comps) {
 						Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $aduser.Company)
 						$contactuser = $null
 					} else {
-						$is_contactuser_it = $contactuser -in $itusers
+						if (($include_users | Measure).Count -gt 0 -And $aduser.distinguishedname -notin $include_users) {
+							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+							$contactuser = $null
+						} else {
+							$is_contactuser_it = $contactuser -in $itusers
+						}
 					}
 				} catch {
 					Write-Error $_
@@ -310,7 +317,9 @@ $processed_systems = foreach($comp in $comps) {
 							$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN
 							Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
 							if ($aduserTemp.Enabled -And $aduserTemp.distinguishedname -eq "CN=$user,$USER_OU") {
-								if ($CONTACTUSER_COMPANIES.Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
+								if (($include_users | Measure).Count -gt 0 -And $aduserTemp.distinguishedname -notin $include_users) {
+									Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $user)
+								} elseif ($CONTACTUSER_COMPANIES.Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
 									$contactuser = $user
 									$aduser = $aduserTemp
 									break
@@ -331,7 +340,12 @@ $processed_systems = foreach($comp in $comps) {
 	}
 	# Only continue if we have a valid contact user
 	if ([string]::IsNullOrWhitespace($contactuser)) {
-		Write-Warning("[{0}] [{1}] - SKIPPING: No valid contact user." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		$skip_reason = "No Valid Contact User"
+		Write-Warning("[{0}] [{1}] - SKIPPING: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $skip_reason)
+	}
+	
+	# We skipped this system.
+	If (-not [string]::IsNullOrEmpty($skip_reason)) {
 		$skipped_systems += @(
 			[PSCustomObject]@{
 				Name=$comp.Name
@@ -344,7 +358,7 @@ $processed_systems = foreach($comp in $comps) {
 				IsAssigned=$is_assigned
 				IsStale=$is_stale
 				OS=$comp.operatingsystemversion
-				SkippedReason="No Valid Contact"
+				SkippedReason=$skip_reason
 				Link=$link_url
 			}
 		)
@@ -399,7 +413,7 @@ if ($ManageGroupOnly) {
 $EMAIL_INTRO_HTML
 <table border=1>
 	<tr>
-		<td>Name</td><td>Asset Tag</td><td>Form Factor</td><td>Last Active Date</td><td>Shared?</td><td>Compatible?</td>
+		<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td><td>Shared</td><td>Compatible</td>
 	</tr>
 "@
 		# -- BODY --
@@ -526,27 +540,31 @@ $EMAIL_INTRO_HTML
 
 # Next, we'll also remove all users from the notification GPO and re-add only the ones we're sending emails to.
 $users = $contactusers_systems | % { $_.Group.ADUser | Select -ExpandProperty distinguishedname -Unique -First 1 }
-if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP) -And ($users | Measure).Count -gt 0) {
-	Write-Host("[{0}] Processing notification GPO filter group [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $NOTIFICATION_GROUP)
-	Write-Verbose("[{0}] First user to process: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $users | Select -First 1)
-	try {
-		$group = Get-ADGroup $NOTIFICATION_GROUP
-		if (-Not [string]::IsNullOrEmpty($group.distinguishedname)) {
-			$groupMembers = Get-ADUser -LDAPFilter "(memberOf=$($group.distinguishedname))"
-			if (($groupMembers | Measure).Count -le 0) {
-				Write-Host("[{0}] Group is currently empty." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
-			} else {
-				$removeGroupMembers = $groupMembers | where {$_.distinguishedname -notin $users}
-				Write-Host("[{0}] Removing {1} out of {2} members from group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($removeGroupMembers | Measure).Count, ($groupMembers | Measure).Count, $NOTIFICATION_GROUP)
-				Remove-ADGroupMember $NOTIFICATION_GROUP -Members $removeGroupMembers -Confirm:$false -WhatIf:$DryRun
-				$users = $users | where {$_ -notin $groupMembers.distinguishedname}
+if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
+	if (($users | Measure).Count -gt 0) {
+		Write-Host("[{0}] Processing notification GPO filter group [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $NOTIFICATION_GROUP)
+		Write-Verbose("[{0}] First user to process: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $users | Select -First 1)
+		try {
+			$group = Get-ADGroup $NOTIFICATION_GROUP
+			if (-Not [string]::IsNullOrEmpty($group.distinguishedname)) {
+				$groupMembers = Get-ADUser -LDAPFilter "(memberOf=$($group.distinguishedname))"
+				if (($groupMembers | Measure).Count -le 0) {
+					Write-Host("[{0}] Group is currently empty." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+				} else {
+					$removeGroupMembers = $groupMembers | where {$_.distinguishedname -notin $users}
+					Write-Host("[{0}] Removing {1} out of {2} members from group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($removeGroupMembers | Measure).Count, ($groupMembers | Measure).Count, $NOTIFICATION_GROUP)
+					Remove-ADGroupMember $NOTIFICATION_GROUP -Members $removeGroupMembers -Confirm:$false -WhatIf:$DryRun
+					$users = $users | where {$_ -notin $groupMembers.distinguishedname}
+				}
+				Write-Host("[{0}] Adding {1} members to group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($users | Measure).Count, $NOTIFICATION_GROUP)
+				Add-ADGroupMember $NOTIFICATION_GROUP -Members $users -Confirm:$false -WhatIf:$DryRun
 			}
-			Write-Host("[{0}] Adding {1} members to group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($users | Measure).Count, $NOTIFICATION_GROUP)
-			Add-ADGroupMember $NOTIFICATION_GROUP -Members $users -Confirm:$false -WhatIf:$DryRun
+		} catch {
+			Write-Error $_
+			$error_count++
 		}
-	} catch {
-		Write-Error $_
-		$error_count++
+	} else {
+		Write-Host("[{0}] No users to process for notification GPO filter group." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
 	}
 }
 
