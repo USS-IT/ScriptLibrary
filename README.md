@@ -23,6 +23,12 @@ $ cd ScriptLibrary
 # Documentation
 Click on the arrow by the script name to see brief documentation and usage notes.
 
+## User Scripts (for customer distribution)
+<details>
+<summary>Copy_Home_Files_To_Onedrive.bat</summary>
+Allows users to safely copy all of the files on their HOME network share into the Documents folder on their OneDrive. User must be on a Hopkins network / VPN to do the copy.
+</details>
+
 ## Active Directory and Exchange
 
 <details>
