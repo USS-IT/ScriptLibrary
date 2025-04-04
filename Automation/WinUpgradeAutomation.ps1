@@ -103,7 +103,21 @@ $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # <Table with system info>
 # <System list items>
 # $EMAIL_FOOTER_HTML
-$EMAIL_INTRO_HTML = "<p>You are receiving this email because the following systems are missing a critical upgrade to the latest version of Windows 11...etc </p>"
+$EMAIL_INTRO_HTML = @"<p>This is an automated message.</p>
+<p>You are receiving this email because your system is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
+ 
+<p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the link below: [Insert Link Here]</p>
+
+<p>Please note that desktops and all-in-one (AIO) devices will be automatically upgraded.</p>
+
+<p>If you encounter any issues with the update, please <a href="https://johnshopkins.service-now.com/serviceportal?id=report_problem&sys_id=3f1dd0320a0a0b99000a53f7604a2ef9">open a helpdesk ticket</a>.</p>
+ 
+<p>Thank you for your cooperation.</p>
+"@
+# Version of the email intro that will only be used if all the systems are desktops/aios.
+# If blank, it will use the default intro text for all systems.
+$EMAIL_INTRO_HTML_DESKTOPS = ""
+# Footer that will be displayed in the email, after the system table and notes sections. This can be blank.
 $EMAIL_FOOTER_HTML = ""
 # Amount of time in seconds to sleep between emails.
 $EMAIL_SLEEP_SECS = 5
@@ -408,19 +422,14 @@ if ($ManageGroupOnly) {
 		$user = $o.Name
 		$department = $o.Group.Department | Select -Unique -First 1
 		$systems = $o.Group
-		# -- HEADER --
-		$msgHtml = @"
-$EMAIL_INTRO_HTML
-<table border=1>
-	<tr>
-		<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td><td>Shared</td><td>Compatible</td>
-	</tr>
-"@
-		# -- BODY --
+		
+		# -- System Table --
 		$has_shared_system = $false
 		$has_stale_system = $false
 		$has_unassigned_system = $false
 		$has_incompatible_system = $false
+		$desktop_count = 0
+		$msgSystemTable = ""
 		foreach($systeminfo in $systems) {
 			$shared_system = ""
 			if ($systeminfo.IsSharedSystem) {
@@ -436,7 +445,7 @@ $EMAIL_INTRO_HTML
 			if( $ASSET_TAG_IS_NUMERIC -And -Not $assettag -match "/d+" ) {
 				$assettag = $null
 			}
-			$msgHtml += @"
+			$msgSystemTable += @"
 	<tr>
 		<td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td>
 	</tr>
@@ -448,8 +457,29 @@ $EMAIL_INTRO_HTML
 			if ($systeminfo.IsStale) {
 				$has_stale_system = $true
 			}
+			if ($systeminfo.FormFactor -eq "Desktop" -Or $systeminfo.FormFactor -eq "All-In-One") {
+				$desktop_count++
+			}
 		}
-		$msgHtml += "</table>"
+		
+		# -- HEADER --
+		# Change header depending on whether they only have a desktop or not.
+		if($desktop_count -eq $o.Count -And -Not [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS)) {
+			$msgHtml = $EMAIL_INTRO_HTML_DESKTOPS
+		} else {
+			$msgHtml = $EMAIL_INTRO_HTML
+		}
+		# -- BODY - SYSTEM TABLE --
+		$msgHtml += @"
+		
+<table border=1>
+	<tr>
+		<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td><td>Shared</td><td>Compatible</td>
+	</tr>
+$msgSystemTable
+	</table>
+"@
+		# -- BODY - NOTES --
 		if ($has_shared_system -Or $has_stale_system -Or $has_unassigned_system -Or $has_incompatible_system) {
 			$msghtml += @"
 <br />
@@ -461,6 +491,10 @@ $EMAIL_INTRO_HTML
 	<li>One or more of these systems may not be compatible with Windows 11. You may reply to this email for more information.</li>
 "@
 			}
+			if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
+				$msgHtml += @"
+	<li>One or more of these systems are desktops or all-in-ones. These systems will be upgraded automatically sometime after their next restart.</li>
+"@
 			if ($has_shared_system) {
 				$msgHtml += @"
 	<li>One or more of these systems may be a shared system.</li>
@@ -525,6 +559,7 @@ $EMAIL_INTRO_HTML
 			SharedSystems = $has_shared_system
 			StaleSystems = $has_stale_system
 			UnassignedSystems = $has_unassigned_system
+			DesktopCount = $desktop_count
 			IncompatibleSystems = $has_incompatible_system
 			EmailSent = $email_success
 		}
