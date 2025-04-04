@@ -142,7 +142,7 @@ fabric.properties
 
 # Kernel Module Compile Results
 *.mod*
-*.cmd
+#*.cmd
 .tmp_versions/
 modules.order
 Module.symvers
@@ -866,7 +866,7 @@ ipython_config.py
 *.csi
 *.lvw
 *.dca
-*.bat
+#*.bat
 *.zip
 *.old
 *.enc
