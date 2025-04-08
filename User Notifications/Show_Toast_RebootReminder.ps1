@@ -1,22 +1,101 @@
-# MJC 3-24-23
-# Shows a toast notification if the users system has not restarted for a long period of time.
-# Must be run under the user's context.
-# Number of days before a restart reminder is displayed.
-$RESTART_ALERT_DAYS = 7
-# Optional link for custom button which redirects to given URL.
-# NOTE: THIS URL must be url-encoded!
-# Add-Type -AssemblyName System.Web
-# [System.Web.HttpUtility]::HtmlEncode($TOAST_CLICKABLE_LINK)
-$TOAST_CLICKABLE_LINK=""
-# Text for button. Required if $TOAST_CLICKABLE_LINK is given.
-$TOAST_CLICKABLE_LINK_TEXT=""
-# Title for toast window.
-$TOAST_TITLE="Alert from USS IT"
-# Text of toast message.
-# {0} displays number of days since last restart.
-# NOTE: Max length of TOAST_TEXT cannot exceed ~175-185 characters.
-$TOAST_TEXT="Your system requires a restart to keep running smoothly. Last Restart: {0} days ago."
+<#
+	.SYNOPSIS
+	Shows a toast notification if the users system has not restarted in the given length of time (7 days by default).
+	
+	.DESCRIPTION
+	Shows a toast notification if the users system has not restarted in the given length of time (7 days by default).
 
+	.PARAMETER RestartAlertDays
+	Number of days before an alert is displayed. Default is 7.
+	
+	.PARAMETER ToastTitle
+	Optional title for the toast notification. Default is "Alert from USS IT".
+	
+	.PARAMETER ToastText
+	Optional text for the toast notification. {0} will be substituted with # of days since last restart. Must be <= 175 characters. Default is "Your system requires a restart to keep running smoothly. Last Restart: {0} days ago."
+	
+	.PARAMETER ClickableLink
+	Optional URL link to assign to a clickable button.
+	
+	.PARAMETER ClickableLinkText
+	Required text for the clickable button if -ToastClickableLink is given.
+	
+	.PARAMETER Duration
+	Duration (in minutes) before the alert is automatically dismissed. Default is 60 minutes.
+	
+	.PARAMETER ShowSnoozeTimer
+	Show a snoozable timer instead of automatically dismissing.
+	
+	.PARAMETER ClearOldNotifications
+	Clears old notifications for the default app ID before displaying the new toast. Useful with -ShowSnoozeTimer.
+	
+	.NOTES
+	Must be run under the user's context.
+	
+	Created: 3-23-23
+	Author: mcarras8
+#>
+[cmdletbinding(DefaultParametersetName='None')]
+param(
+	[Parameter(Mandatory=$false)]
+	[uint64]$RestartAlertDays=7,
+	
+	[Parameter(Mandatory=$false)]
+	[string]$ToastTitle="Alert from USS IT",
+	
+	[Parameter(Mandatory=$false)]
+	[string]$ToastText="Your system requires a restart to keep running smoothly. Last Restart: {0} days ago.",
+	
+	[Parameter(Mandatory=$false,
+	 ParameterSetName="ClickableLink")]
+	[string]$ClickableLink,
+	
+	[Parameter(Mandatory=$true,
+	 ParameterSetName="ClickableLink")]
+	[string]$ClickableLinkText,
+	
+	[Parameter(Mandatory=$false)]
+	[uint32]$Duration=60,
+	
+	[Parameter(Mandatory=$false)]
+	[switch]$ShowSnoozeTimer,
+	
+	[Parameter(Mandatory=$false)]
+	[switch]$ClearOldNotifications
+)
+
+# -- START FUNCTIONS --
+<#
+	.SYNOPSIS
+	Displays a Windows toast notification for the current user.
+	
+	.DESCRIPTION
+	Displays a Windows toast notification for the current user.
+
+	.PARAMETER Text
+	Text to display in toast notification. Max ~175 characters.
+	
+	.PARAMETER Title
+	Title to use for toast notification. Default is "Alert from IT"
+	
+	.PARAMETER ClickableLink
+	Optional URL link to assign to a clickable button.
+	
+	.PARAMETER ClickableLinkText
+	Text for the clickable link button.
+	
+	.PARAMETER LauncherID
+	Required AppID to use for the notification. You can use any from Get-StartApps. Default is "Microsoft.SoftwareCenter.DesktopToasts".
+	
+	.PARAMETER ShowSnoozeTimer
+	Determines whether we will display a snooze timer and use the Reminder scenario (persistent toast).
+	
+	.PARAMETER Duration
+	Duration in minutes before automatically dismissing the toast. Only used when ShowSnoozeTimer is NOT set. Default is 15 minutes.
+	
+	.PARAMETER ClearOldNotifications
+	Automatically clear old notifications for the given LauncherID from the user's toast history in the Notification Center.
+#>
 function Show-Toast {
 	[cmdletbinding(DefaultParametersetName='None')]
 	Param (
@@ -25,24 +104,35 @@ function Show-Toast {
 			Position=0)]
 		[string]$Text,
 		[string]$Title = "Alert from IT",
-		# Displays button link and text along with Dismiss button
 		[Parameter(Mandatory=$false,
 			ParameterSetName="ClickableLink")]
 		[string]$ClickableLink,
 		[Parameter(Mandatory=$true,
 			ParameterSetName="ClickableLink")]
 		[string]$ClickableLinkText,
-		# Launcher ID, such as the AppIDs from Get-StartApps
 		[string]$LauncherID = "Microsoft.SoftwareCenter.DesktopToasts",
-		# Determines whether we will display a Snooze timer and use the Reminder scenario (persistent toast).
 		[switch]$ShowSnoozeTimer,
-		# Duration (Minutes) before automatically being dismissed. Only used when ShowSnoozeTimer is NOT set.
-		[uint32]$Duration = 15
+		[uint32]$Duration = 15,
+		[switch]$ClearOldNotifications
 	)
 
 	[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 	[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
+	if ([string]::IsNullOrWhitespace($Text)) {
+		throw "Toast text is all whitespace or empty"
+	}
+	
+	# Clear out old notifications, if set.
+	If($ClearOldNotifications) {
+		try {
+			$ToastHistory = [Windows.UI.Notifications.ToastNotificationManager]::History
+			$ToastHistory.Clear($LauncherID)
+		} catch {
+			Write-Error $_
+		}
+	}
+	
 	# NOT cast to XML
 	if ($ShowSnoozeTimer) {
 		$Actions = @"
@@ -109,21 +199,31 @@ function Show-Toast {
 	}
 	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($LauncherID).Show($Toast)
 }
+# -- END FUNCTIONS --
 
-If($TOAST_TEXT.Length -gt 175) {
-	Write-Warning "TOAST_TEXT is too long, text may be truncated"
+If($ToastText.Length -gt 175) {
+	Write-Warning "-ToastText is too long, text may be truncated"
 }
 
 try {
 	# Grab uptime from WMI. If 
 	$uptimeDays = ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime((Get-WmiObject Win32_OperatingSystem | Select -ExpandProperty LastBootUpTime))) | Select -ExpandProperty Days
-	if ($uptimeDays -ge $RESTART_ALERT_DAYS) {
+	if ($uptimeDays -ge $RestartAlertDays) {
+		# Add extra parameters before calling the function.
 		$extraParams = @{}
-		if (-Not [string]::IsNullorWhitespace($TOAST_CLICKABLE_LINK)) {
-			$extraParams.Add("ClickableLink", $TOAST_CLICKABLE_LINK)
-			$extraParams.Add("ClickableLinkText", $TOAST_CLICKABLE_LINK_TEXT)
+		if (-Not [string]::IsNullorWhitespace($ClickableLink)) {
+			$extraParams.Add("ClickableLink", $ClickableLink)
+			$extraParams.Add("ClickableLinkText", $ClickableLinkText)
 		}
-		Show-Toast -Text ($TOAST_TEXT -f $uptimeDays) -ShowSnoozeTimer @extraParams
+		if ($ShowSnoozeTimer) {
+			$extraParams.Add("ShowSnoozeTimer", $true)
+		} else {
+			$extraParams.Add("Duration", $Duration)
+		}
+		if ($ClearOldNotifications) {
+			$extraParams.Add("ClearOldNotifications", $true)
+		}
+		Show-Toast -Text ($ToastText -f $uptimeDays) @extraParams
 	}
 } catch {
 	Write-Error $_
