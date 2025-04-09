@@ -1,5 +1,34 @@
-# MJC 4-27-22
-# Shows a Windows 10 Toast Notification. Must be run under the user's account.
+<#
+	.SYNOPSIS
+	Displays a Windows toast notification for the current user.
+	
+	.DESCRIPTION
+	Displays a Windows toast notification for the current user.
+
+	.PARAMETER Text
+	Text to display in toast notification. Max ~175 characters.
+	
+	.PARAMETER Title
+	Title to use for toast notification. Default is "Alert from IT"
+	
+	.PARAMETER ClickableLink
+	Optional URL link to assign to a clickable button.
+	
+	.PARAMETER ClickableLinkText
+	Text for the clickable link button.
+	
+	.PARAMETER LauncherID
+	Required AppID to use for the notification. You can use any from Get-StartApps. Default is "Microsoft.SoftwareCenter.DesktopToasts".
+	
+	.PARAMETER ShowSnoozeTimer
+	Determines whether we will display a snooze timer and use the Reminder scenario (persistent toast).
+	
+	.PARAMETER Duration
+	Duration in minutes before automatically dismissing the toast. Only used when ShowSnoozeTimer is NOT set. Default is 15 minutes.
+	
+	.PARAMETER ClearOldNotifications
+	Automatically clear old notifications for the given LauncherID from the user's toast history in the Notification Center.
+#>
 function Show-Toast {
 	[cmdletbinding(DefaultParametersetName='None')]
 	Param (
@@ -8,23 +37,34 @@ function Show-Toast {
 			Position=0)]
 		[string]$Text,
 		[string]$Title = "Alert from IT",
-		# Displays button link and text along with Dismiss button
 		[Parameter(Mandatory=$false,
 			ParameterSetName="ClickableLink")]
 		[string]$ClickableLink,
 		[Parameter(Mandatory=$true,
 			ParameterSetName="ClickableLink")]
 		[string]$ClickableLinkText,
-		# Launcher ID, such as the AppIDs from Get-StartApps
 		[string]$LauncherID = "Microsoft.SoftwareCenter.DesktopToasts",
-		# Determines whether we will display a Snooze timer and use the Reminder scenario (persistent toast).
 		[switch]$ShowSnoozeTimer,
-		# Duration (Minutes) before automatically being dismissed. Only used when ShowSnoozeTimer is NOT set.
-		[uint32]$Duration = 15
+		[uint32]$Duration = 15,
+		[switch]$ClearOldNotifications
 	)
 
 	[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 	[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+
+	if ([string]::IsNullOrWhitespace($Text)) {
+		throw "Toast text is all whitespace or empty"
+	}
+	
+	# Clear out old notifications, if set.
+	If($ClearOldNotifications) {
+		try {
+			$ToastHistory = [Windows.UI.Notifications.ToastNotificationManager]::History
+			$ToastHistory.Clear($LauncherID)
+		} catch {
+			Write-Error $_
+		}
+	}
 
 	# NOT cast to XML
 	if ($ShowSnoozeTimer) {

@@ -18,7 +18,7 @@
 	Optional URL link to assign to a clickable button.
 	
 	.PARAMETER ClickableLinkText
-	Required text for the clickable button if -ToastClickableLink is given.
+	Required text for the clickable button if -ClickableLink is given.
 	
 	.PARAMETER Duration
 	Duration (in minutes) before the alert is automatically dismissed. Default is 60 minutes.
