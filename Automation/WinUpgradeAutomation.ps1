@@ -106,7 +106,7 @@ $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 $EMAIL_INTRO_HTML = @"<p>This is an automated message.</p>
 <p>You are receiving this email because your system is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
  
-<p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the link below: [Insert Link Here]</p>
+<p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
 
 <p>Please note that desktops and all-in-one (AIO) devices will be automatically upgraded.</p>
 
