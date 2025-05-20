@@ -39,9 +39,9 @@ param(
 		
 # -- START CONFIGURATION --
 # This should be the previous version before the latest build version.
-$EOLVER=22621		# Windows 11, 22H2
+$EOLVER=22631		# Windows 11, 23H2
 # This should be the version offered in the upgrade.
-$UPGRADEVER=22631	# Windows 11, 23H2
+$UPGRADEVER=26100	# Windows 11, 24H2
 # The searchbase to search for matching computers in AD.
 $SEARCHBASE = "OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu"
 # Array of OUs to always exclude
@@ -69,6 +69,8 @@ $CONTACTUSER_COMPANIES = @("JHU; University Student Services")
 # If given, contact users must be a member of the given groups to be considered valid. This includes the assigned user field.
 # If this is set, it should include the main sync group for the SOR.
 $CONTACTUSER_INCLUDE_GROUPS = @("USS-IT-SnipeItUsersAll")
+# If given, these groups will be excluded from contact / notifications.
+# $CONTACTUSER_EXCLUDE_GROUPS = @("USS-VIP")
 # Array of group(s) containing members of IT.
 # They will only be contacted if there's no other valid contact users.
 $CONTACTUSER_EXCLUDE_ITGROUPS = @("USS-IT-JHEDs")
@@ -98,17 +100,18 @@ $EMAIL_FROM = 'Jerome.Powell@jhu.edu'
 $EMAIL_CC = @('Jerome.Powell@jhu.edu','mcarras8@jhu.edu')
 $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # This is the first part of each email. Allows for HTML.
-# Each email will be in the format of:
+# Each email will be in the format of either:
+# $EMAIL_INTRO_HTML - where {0} is replaced by ", SYSTEM_NAME (asset #), "
+# $EMAIL_FOOTER_HTML
+# ...or, if the user has multiple systems...
 # $EMAIL_INTRO_HTML
 # <Table with system info>
 # <System list items>
 # $EMAIL_FOOTER_HTML
 $EMAIL_INTRO_HTML = @"<p>This is an automated message.</p>
-<p>You are receiving this email because your system is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
+<p>You are receiving this email because your system{0} is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
  
 <p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
-
-<p>Please note that desktops and all-in-one (AIO) devices will be automatically upgraded.</p>
 
 <p>If you encounter any issues with the update, please <a href="https://johnshopkins.service-now.com/serviceportal?id=report_problem&sys_id=3f1dd0320a0a0b99000a53f7604a2ef9">open a helpdesk ticket</a>.</p>
  
@@ -116,9 +119,26 @@ $EMAIL_INTRO_HTML = @"<p>This is an automated message.</p>
 "@
 # Version of the email intro that will only be used if all the systems are desktops/aios.
 # If blank, it will use the default intro text for all systems.
-$EMAIL_INTRO_HTML_DESKTOPS = ""
+# {1} will be replaced by the date set in $UPGRADE_DESKTOP_REQUIRED_DATE.
+<#
+$EMAIL_INTRO_HTML_DESKTOPS = @"<p>This is an automated message.</p>
+<p>You are receiving this email because your system{0} is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded. Your system has been set to upgrade automatically on or after <b>{1}</b>.</p>
+
+<p>If you'd like to upgrade sooner you may follow the instructions in the following link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
+
+<p>If you encounter any issues with the update, please <a href="https://johnshopkins.service-now.com/serviceportal?id=report_problem&sys_id=3f1dd0320a0a0b99000a53f7604a2ef9">open a helpdesk ticket</a>.</p>
+ 
+<p>Thank you for your cooperation.</p>
+"@
+#>
+# If given, emails will reference this date for automatic upgrades for desktops/AIOs.
+# $UPGRADE_DESKTOP_REQUIRED_DATE = "5-25-2025"
 # Footer that will be displayed in the email, after the system table and notes sections. This can be blank.
 $EMAIL_FOOTER_HTML = ""
+# If set, only show a detailed table if there's more than one referenced system in the email.
+$EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY = $true
+# If set, do not email referencing only desktops/aios.
+$EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS = $false
 # Amount of time in seconds to sleep between emails.
 $EMAIL_SLEEP_SECS = 5
 # Debugging override. Send emails to this address instead of the listed contact user. Used for testing, should be commented out otherwise.
@@ -126,8 +146,16 @@ $DEBUG_EMAIL_TO_OVERRIDE = "mcarras8@jhu.edu"
 # Debugging override. Only send the given number of emails. Used for testing, should be commented out otherwise.
 $DEBUG_EMAIL_LIMIT = 1
 
+# Email a report at the end.
+$EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
+# $EMAIL_REPORT_TO = @("")
+$EMAIL_REPORT_TO_GROUPS = @("USS-IT-JHEDs")
+$EMAIL_REPORT_SUBJECT = "Weekly Results from Windows 11 Upgrade Campaign"
+
 # Path to systems which report being ineligible for upgrade.
 $IMPORT_INELIGIBLE_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_incompatible_systems_3_14_25.csv"
+# Whether to skip emailing/notifying ineligible systems (and include them in skip report).
+$SKIP_INELIGIBLE_SYSTEMS = $true
 
 # Path to save reports to.
 $EXPORT_ALL_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems.csv"
@@ -143,32 +171,34 @@ $LOGFILE_ROTATE_DAYS = 90
 # -- END CONFIGURATION --
 
 # -- FUNCTION START --
-<#
-	.SYNOPSIS
-	Returns AD user object for the given username/identity.
-	
-	.DESCRIPTION
-	Returns AD user object for the given username/identity.
-	
-	.PARAMETER User
-	The AD user name or identity.
-	
-	.PARAMETER Domain
-	Optional Domain to append if needed for caching purposes.
-	
-	.PARAMETER Properties
-	Optional properties to return (default: Company,Department).
-	
-	.OUTPUTS
-	The AD user object.
-	
-	.NOTES
-	Saves a cache to $_ADUSERS.
-#>
 $_ADUSERS=@{}
 function Get-ADUserCached {
+	<#
+		.SYNOPSIS
+		Returns AD user object for the given username/identity.
+		
+		.DESCRIPTION
+		Returns AD user object for the given username/identity.
+		
+		.PARAMETER User
+		The AD user name or identity.
+		
+		.PARAMETER Domain
+		Optional Domain to append if needed for caching purposes.
+		
+		.PARAMETER Properties
+		Optional properties to return (default: Company,Department).
+		
+		.OUTPUTS
+		The AD user object.
+		
+		.NOTES
+		Saves a cache to $_ADUSERS.
+	#>
+
 	param(
 		[Parameter(Mandatory=$true,Position=0)]
+		[ValidateNotNullOrEmpty()]
 		[string]$User,
 		
 		[Parameter(Mandatory=$false,Position=1)]
@@ -179,13 +209,19 @@ function Get-ADUserCached {
 	)
 	
 	$UPN = $User
-	if (-Not [string]::IsNullOrEmpty($Domain) -And $UPN -notmatch "@") {
+	$isDN = $User -like "CN=*"
+	if (-Not [string]::IsNullOrEmpty($Domain) -And -Not $isDN -And $UPN -notmatch "@") {
 		$UPN += $Domain
 	}
 	$u = $_ADUSERS.$UPN
 	if ([string]::IsNullOrEmpty($u.distinguishedname)) {
 		try {
-			$u = Get-ADUser -LDAPFilter "(|(SamAccountName=$UPN)(UserPrincipalName=$UPN))" -Properties $Properties			
+			# If the given user is a distinguishedname, use that instead.
+			if ($isDN) {
+				$u = Get-ADUser $UPN -Properties $Properties
+			} else {
+				$u = Get-ADUser -LDAPFilter "(|(SamAccountName=$UPN)(UserPrincipalName=$UPN))" -Properties $Properties			
+			}
 			$_ADUSERS[$UPN] = $u
 		} catch {
 			throw $_
@@ -193,9 +229,183 @@ function Get-ADUserCached {
 	}
 	return $u
 }
+
+function Get-ADUsersByGroup {
+	<#
+		.SYNOPSIS
+		Collect all AD users from given target group(s), filtering the results.
+		
+		.DESCRIPTION
+		Collect all AD users from given target group(s), filtering the results. If you want to check all users give a global group like Domain Users.
+		
+		.PARAMETER TargetGroup
+        Required. The AD Group(s) to check.
+		
+		.PARAMETER ADProperties
+        The AD properties to return with each user.
+		
+		.PARAMETER ADPropertyFilter
+        A filterscript to use on the results. Use backticks for property references. E.g. "`$_.distinguishedname -like '*,OU=Users,*'"
+		
+		.PARAMETER Nested
+		Will recurse over groups if given. This may take a while with large groups.
+		
+        .PARAMETER IncludeDisabled
+        If true include disabled users.
+		
+		.PARAMETER ExitOnError
+		Exit on error fetching group membership.
+		
+		.PARAMETER RecurseLoopCount
+		This is used when the function is called recursively.
+		
+		.OUTPUTS
+		The returned users from AD.
+		
+		.Example
+		PS> Get-ADUsersByGroup "Domain Users" -ADProperties @("department","company","title","manager")
+	#>
+	param (		
+		[parameter(Mandatory=$true,
+					Position = 0,
+					ValueFromPipeline = $true,
+					ValueFromPipelineByPropertyName=$true)]
+		[string[]]$TargetGroup,
+		
+		[parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+		[string[]]$ADProperties = @("givenname","surname","department","company","title","manager","physicaldeliveryofficename","mail"),
+		
+		[parameter(Mandatory=$false)]
+		[string]$ADPropertyFilter,
+		
+		[parameter(Mandatory=$false)]
+		[switch]$Nested,
+
+        [parameter(Mandatory=$false)]
+		[switch]$IncludeDisabled,
+		
+		[parameter(Mandatory=$false)]
+		[switch]$ExitOnError,
+		
+		[parameter(Mandatory=$false)]
+		[int]$RecurseLoopCount=0
+	)
+	
+	$ad_users = $null
+	$props = $ADProperties
+	if ($props -ne $null -And -Not $props -is [array]) {
+		$props = @($props)
+	}
+	# We'll use the memberof property to determine if we already got this user.
+	$props += @("distinguishedname","memberof") | Select -Unique
+	Write-Debug "[Get-ADUsersByGroup] Properties: $props"
+		
+	foreach ($group in $TargetGroup) {
+		# Get all users from AD
+		Write-Verbose ("[Get-ADUsersByGroup] Collecting all users from AD group [$group] (Nested=$Nested, With Filter={0})..." -f (-not [string]::IsNullOrEmpty($ADPropertyFilter)))
+		
+		if ($Nested) {
+			try {
+				# May not work with >5000 results
+				$ad_users += Get-ADGroupMember $group -Recursive -ErrorAction Stop | where {$_.objectClass -eq 'user'}
+			} catch [System.TimeoutException],[TimeoutException] {
+				Write-Warning ("[Get-ADUsersByGroup] Timeout detected. Trying again, recursing over each member. Please wait...")
+				# If we have a timeout, try again recursing over each nested group found.
+				# If we have a very high recurse count, assume we're in an infinite loop and throw an error.
+				if ($RecurseLoopCount -gt 20) {
+					$errorMsg = "Recurse count is too high ($RecurseLoopCount), may be infinite loop, aborting"
+					if ($ExitOnError) {
+						Write-Error $errorMsg
+						exit -1
+					} else {
+						throw $errorMsg
+					}
+				}
+				try {
+					# Manually recurse over nested groups.
+					# An alternative is using LDAP_MATCHING_RULE_IN_CHAIN, but it's quite slower.
+					# Get the group info.
+					$adgroup = Get-ADGroup $group
+					# Get all user members of this group.
+					$childUsers = Get-ADUser -LDAPFilter "(&(objectCategory=user)(samAccountName=*)(memberOf:=$($adgroup.distinguishedname)))" -Properties $props -ErrorAction Stop
+					Write-Debug("[Get-ADUsersByGroup] [group=$group] Found $($childUsers.Count) users")
+					# Get all nested groups.
+					$childGroups = Get-ADGroup -LDAPFilter "(&(objectCategory=group)(samAccountName=*)(memberOf:=$($adgroup.distinguishedname)))" -ErrorAction Stop | Select -ExpandProperty Name
+					Write-Debug("[Get-ADUsersByGroup] [group=$group] Found $($childGroups.Count) groups")
+					# Call this function recursively for all groups found.
+					if (($childGroups | Measure-Object).Count -gt 0) {
+						$ad_users += Get-ADUsersByGroup -TargetGroup $childGroups -ADProperties $ADProperties -Nested -IncludeDisabled:$IncludeDisabled -ExitOnError:$ExitOnError -RecurseLoopCount ($RecurseLoopCount + 1)
+					}
+				} catch {
+					if ($ExitOnError) {
+						Write-Error $_
+						exit -1
+					} else {
+						throw
+					}
+				}
+			} catch {
+				if ($ExitOnError) {
+					Write-Error $_
+					exit -1
+				} else {
+					throw
+				}
+			}
+		} else {
+			# No nested groups.
+			try {
+				$adgroup = Get-ADGroup $group
+				$ad_users += Get-ADUser -LDAPFilter "(&(objectCategory=user)(samAccountName=*)(memberOf:=$($adgroup.distinguishedname)))" -Properties $props -ErrorAction Stop
+			} catch {
+				if ($ExitOnError) {
+					Write-Error $_
+					exit -1
+				} else {
+					throw
+				}
+			}
+		}
+	}
+    if ($ad_users -ne $null) {		
+		# Get extra attributes for each user
+		Write-Verbose ("[Get-ADUsersByGroup] Getting properties for {0} users..." -f ($ad_users | Measure).Count)
+		# Make sure to dedupe users here.
+		# Only fetch the user if they are missing the "memberof" property
+		try {
+			$ad_users = $ad_users | Sort distinguishedname -Unique | foreach { if($_.memberof -ne $null) { $_ } else { Get-ADUserCached $_.distinguishedname -Properties $props } }
+		} catch {
+			if ($ExitOnError) {
+				Write-Error $_
+				exit -1
+			} else {
+				throw
+			}
+		}
+		Write-Debug("[Get-ADUsersByGroup] {0} users after removing duplicates and calling Get-ADUserCached for properties" -f ($ad_users | Measure).Count)
+		
+		$filterscript = $ADPropertyFilter
+		if (-Not $IncludeDisabled) {
+			if (-Not [string]::IsNullOrWhitespace($filterscript)) {
+				$filterscript += ' -AND '
+			}
+			$filterscript += "`$_.Enabled -eq `$true"
+		}
+	    Write-Debug "[Get-ADUsersByGroup] AD Group Filter: $filterscript"
+	    if (-Not [string]::IsNullOrWhitespace($filterscript)) {
+		    $ad_users = $ad_users | Where-Object -FilterScript ([scriptblock]::create($filterscript))
+	    }
+    }
+	Write-Verbose ("[Get-ADUsersByGroup] Total filtered AD users collected: {0}" -f $ad_users.Count)
+	
+	return $ad_users
+}
 # -- FUNCTION END --
 
+# -- START --
 $error_count = 0
+$_scriptName = split-path $PSCommandPath -Leaf
 
 # Rotate log files
 if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
@@ -219,15 +429,19 @@ $comps | Select $selectarray | Export-CSV -NoTypeInformation -Force $EXPORT_ALL_
 Write-Host("[{0}] Exported {1} systems requiring Windows 11 upgrade collected from AD to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count, $EXPORT_ALL_SYSTEMS_PATH)
 
 # Get excluded contact users.
-# These should be accountname only (not UPN/DN).
-$itusers = $CONTACTUSER_EXCLUDE_ITGROUPS | % { Get-ADGroupMember $_ -Recursive } | Select -ExpandProperty Name -Unique
+$adUserBlacklist = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_GROUPS -Nested -Verbose | Select -Unique
+$adUserBlacklistCount = ($adUserBlacklist | Measure).Count
+$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+$itUsersCount = ($itUsers | Measure).Count
 
 # Get included contact users.
 # These should be DN only.
-$include_users = $null
+$adUserWhitelist = $null
+$adUserWhitelistCount = 0
 if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
 	Write-Host("[{0}] Collecting AD group members to include from {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($CONTACTUSER_INCLUDE_GROUPS -join ", "))
-	$include_users = $CONTACTUSER_INCLUDE_GROUPS | % { Get-ADGroupMember $_ -Recursive } | Select -ExpandProperty distinguishedname -Unique
+	$aduserWhitelist = Get-ADUsersByGroup $CONTACTUSER_INCLUDE_GROUPS -Nested -Verbose
+	$adUserWhitelistCount = ($aduserWhitelist | Measure).Count
 }
 
 # Import a previously exported list of all incompatible systems.
@@ -260,7 +474,7 @@ $processed_systems = foreach($comp in $comps) {
 		try {
 			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
 			Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
-			if (($include_users | Measure).Count -gt 0 -And $aduser.distinguishedname -notin $include_users) {
+			if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $aduserWhitelist.distinguishedname) {
 				Write-Warning("[{0}] [{1}] Contact user [{2}] not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
 				$contactuser = $null
 			}
@@ -304,11 +518,11 @@ $processed_systems = foreach($comp in $comps) {
 						Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $aduser.Company)
 						$contactuser = $null
 					} else {
-						if (($include_users | Measure).Count -gt 0 -And $aduser.distinguishedname -notin $include_users) {
+						if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $adUserWhitelist.distinguishedname) {
 							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
 							$contactuser = $null
-						} else {
-							$is_contactuser_it = $contactuser -in $itusers
+						} elseif ($aduser.distinguishedname -ne $null) {
+							$is_contactuser_it = $aduser.distinguishedname -in $itUsers.distinguishedname
 						}
 					}
 				} catch {
@@ -326,22 +540,28 @@ $processed_systems = foreach($comp in $comps) {
 					# Remove the domain from each user
 					$user = $u -replace "[^\\]+\\",""
 					Write-Verbose("[{0}] [{1}] Checking primary user [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
-					if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $itusers -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
+					if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
 						try {
 							$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN
 							Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
-							if ($aduserTemp.Enabled -And $aduserTemp.distinguishedname -eq "CN=$user,$USER_OU") {
-								if (($include_users | Measure).Count -gt 0 -And $aduserTemp.distinguishedname -notin $include_users) {
-									Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $user)
-								} elseif ($CONTACTUSER_COMPANIES.Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
-									$contactuser = $user
-									$aduser = $aduserTemp
-									break
+							# Exclude IT Users, if set.
+							if ($itUsersCount -le 0 -Or $aduserTemp.distinguishedname -notin $itUsers.distinguishedname) {
+								if ($aduserTemp.Enabled -And $aduserTemp.distinguishedname -eq "CN=$user,$USER_OU") {
+									# Check user whitelist, if set.
+									if ($adUserWhitelistCount -gt 0 -And $aduserTemp.distinguishedname -notin $adUserWhitelist.distinguishedname) {
+										Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not found in user groups whitelist" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $user)
+									# Check company, if set.
+									} elseif (($CONTACTUSER_COMPANIES | Measure).Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
+										# If everything else is valid save this user.
+										$contactuser = $user
+										$aduser = $aduserTemp
+										break
+									} else {
+										Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user, $aduserTemp.Company)
+									}
 								} else {
-									Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user, $aduserTemp.Company)
+									Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
 								}
-							} else {
-								Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
 							}
 						} catch {
 							Write-Error $_
@@ -355,7 +575,15 @@ $processed_systems = foreach($comp in $comps) {
 	# Only continue if we have a valid contact user
 	if ([string]::IsNullOrWhitespace($contactuser)) {
 		$skip_reason = "No Valid Contact User"
-		Write-Warning("[{0}] [{1}] - SKIPPING: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $skip_reason)
+		Write-Warning("[{0}] [{1}] - SKIPPING: No Valid Contact User" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+	# Check blacklist of users to exclude from processing.
+	} elseif ($adUserBlacklistCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $aduserBlacklist.distinguishedname) {
+		$skip_reason = "Excluded User"
+		Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+	# Check if we need to skip system due to being ineligible for upgrade.
+	} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
+		$skip_reason = "Incompatible System"
+		Write-Warning("[{0}] [{1}] - SKIPPING: System is in incompatible system list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
 	}
 	
 	# We skipped this system.
@@ -412,12 +640,12 @@ $skipped_systems | Export-CSV -NoTypeInformation -Force $EXPORT_SKIPPED_SYSTEMS_
 Write-Host("[{0}] Exported report of {1} skipped systems to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($skipped_systems | Measure).Count, $EXPORT_SKIPPED_SYSTEMS_PATH)
 
 # Loop over each user and compose an email (unless -DryRun is given).
+$success_email_count = 0
+$emailed_users = $null
 if ($ManageGroupOnly) {
 	Write-Host("[{0}] Skipping emails due to -ManageGroupOnly switch." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
 } else {
-	$emailed_users = $null
 	$counter = 0
-	$success_email_count = 0
 	$emailed_users = foreach ($o in $contactusers_systems) {
 		$user = $o.Name
 		$department = $o.Group.Department | Select -Unique -First 1
@@ -430,6 +658,7 @@ if ($ManageGroupOnly) {
 		$has_incompatible_system = $false
 		$desktop_count = 0
 		$msgSystemTable = ""
+		$msgSystem = ""
 		foreach($systeminfo in $systems) {
 			$shared_system = ""
 			if ($systeminfo.IsSharedSystem) {
@@ -445,11 +674,23 @@ if ($ManageGroupOnly) {
 			if( $ASSET_TAG_IS_NUMERIC -And -Not $assettag -match "/d+" ) {
 				$assettag = $null
 			}
+			$formFactor = $systeminfo.FormFactor
+			if ($systeminfo.FormFactor -eq "Desktop" -Or $systeminfo.FormFactor -eq "All-In-One") {
+				$formFactor += "*"
+				$desktop_count++
+			}
+			<#
 			$msgSystemTable += @"
 	<tr>
 		<td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td>
 	</tr>
-"@ -f $systeminfo.Name, $assettag, $systeminfo.FormFactor, $systeminfo.LastLogonDate, $shared_system, $compatible
+"@ -f $systeminfo.Name, $assettag, $formFactor, $systeminfo.LastLogonDate, $shared_system, $compatible
+#>
+			$msgSystemTable += @"
+				<tr>
+					<td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td>
+				</tr>
+"@ -f $systeminfo.Name, $assettag, $formFactor, $systeminfo.LastLogonDate
 			# We can use these values to change the message.
 			if (-Not $systeminfo.IsAssigned) {
 				$has_unassigned_system = $true
@@ -457,62 +698,99 @@ if ($ManageGroupOnly) {
 			if ($systeminfo.IsStale) {
 				$has_stale_system = $true
 			}
-			if ($systeminfo.FormFactor -eq "Desktop" -Or $systeminfo.FormFactor -eq "All-In-One") {
-				$desktop_count++
+			
+			# Set the system message for contacts with a single computer.
+			if ($EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY -And [string]::IsNullOrEmpty($msgSystem)) {
+				if ($assettag -ne $null) {
+					$msgSystem = (", {0} (asset #{1})," -f $systeminfo.Name, $assettag)
+				} else {
+					$msgSystem = (", {0}," -f $systeminfo.Name)
+				}
 			}
 		}
 		
 		# -- HEADER --
+		# Only add the system name in the first sentence if we aren't showing a table.
+		if(-Not $EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY -Or $o.Count -gt 1) {
+			$msgSystem = ""
+		}
 		# Change header depending on whether they only have a desktop or not.
 		if($desktop_count -eq $o.Count -And -Not [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS)) {
-			$msgHtml = $EMAIL_INTRO_HTML_DESKTOPS
-		} else {
-			$msgHtml = $EMAIL_INTRO_HTML
-		}
-		# -- BODY - SYSTEM TABLE --
-		$msgHtml += @"
-		
-<table border=1>
-	<tr>
-		<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td><td>Shared</td><td>Compatible</td>
-	</tr>
-$msgSystemTable
-	</table>
-"@
-		# -- BODY - NOTES --
-		if ($has_shared_system -Or $has_stale_system -Or $has_unassigned_system -Or $has_incompatible_system) {
-			$msghtml += @"
-<br />
-<b>Notes</b>
-<ul>
-"@
-			if ($has_incompatible_system) {
-				$msgHtml += @"
-	<li>One or more of these systems may not be compatible with Windows 11. You may reply to this email for more information.</li>
-"@
+			$msgRequiredDate = ""
+			if ($UPGRADE_DESKTOP_REQUIRED_DATE) {
+				$msgRequiredDate = (Get-Date $UPGRADE_DESKTOP_REQUIRED_DATE -Format "dddd, MMMM dd")
 			}
+			$msgHtml = ($EMAIL_INTRO_HTML_DESKTOPS -f $msgSystem,$msgRequiredDate)
+		} else {
+			$msgHtml = ($EMAIL_INTRO_HTML -f $msgSystem)
+		}
+		
+		# -- BODY - SYSTEM TABLE --
+		# Only show the table if we have more than 1 system or $EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY is not set.
+		if(-Not $EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY -Or $o.Count -gt 1) {
+<#
+			$msgHtml += @"
+			
+	<table border=1>
+		<tr>
+			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td><td>Shared</td><td>Compatible</td>
+		</tr>
+	$msgSystemTable
+		</table>
+"@
+#>
+			$msgHtml += @"
+			
+	<table border=1>
+		<tr>
+			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td>
+		</tr>
+	$msgSystemTable
+		</table>
+"@
+			# -- BODY - NOTES --
 			if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
 				$msgHtml += @"
-	<li>One or more of these systems are desktops or all-in-ones. These systems will be upgraded automatically sometime after their next restart.</li>
+		<p>* Desktops and all-in-ones will be upgraded automatically pending next restart.</p>
 "@
-			if ($has_shared_system) {
-				$msgHtml += @"
-	<li>One or more of these systems may be a shared system.</li>
+		}
+<#
+			if ($has_shared_system -Or $has_stale_system -Or $has_unassigned_system -Or $has_incompatible_system) {
+				$msghtml += @"
+	<br />
+	<b>Notes</b>
+	<ul>
 "@
-			}
-			if ($has_stale_system) {
-				$msgHtml += @"
-	<li>One or more of these systems have not been active for over $STALE_PC_DAYS days.</li>
+				if ($has_incompatible_system) {
+					$msgHtml += @"
+		<li>One or more of these systems may not be compatible with Windows 11. You may reply to this email for more information.</li>
 "@
-			}
+				}
+				if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
+					$msgHtml += @"
+		<li>Desktops and all-in-ones will be upgraded automatically pending next restart.</li>
+"@
+				}
+				if ($has_shared_system) {
+					$msgHtml += @"
+		<li>One or more of these systems may be a shared system.</li>
+"@
+				}
+				if ($has_stale_system) {
+					$msgHtml += @"
+		<li>One or more of these systems have not been active for over $STALE_PC_DAYS days.</li>
+"@
+				}
 			if ($has_unassigned_system) {
+					$msgHtml += @"
+		<li>One or more of these systems are currently not assigned in our asset system. Please reply to this email to help us confirm this is your assigned system.</li>
+"@
+				}
 				$msgHtml += @"
-	<li>One or more of these systems are currently not assigned in our asset system. Please reply to this email to help us confirm this is your assigned system.</li>
+	</ul>
 "@
 			}
-			$msgHtml += @"
-</ul>
-"@
+#>
 		}
 		
 		# -- FOOTER --
@@ -525,29 +803,34 @@ $msgSystemTable
 
 		$email_success = $false
 		if (-Not $DryRun -And (-Not $DEBUG_EMAIL_LIMIT -Or $success_email_count -le $DEBUG_EMAIL_LIMIT)) {
-			$emailParams = @{
-				From = $EMAIL_FROM
-				To = $user
-				CC = $EMAIL_CC
-				Subject = $EMAIL_SUBJECT
-				Body = $msgHtml
-				Priority = "High"
-				DeliveryNotificationOption = @("OnSuccess", "OnFailure")
-				SmtpServer = $EMAIL_SMTP
+			# If all systems are desktops and $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS is set to $false.
+			if (-Not $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS -And $desktop_count -eq $o.Count) {
+				Write-Host("[{0}] Skipping email for {1} - only has desktops/aios and `$EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS is set to false" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $user)
+			} else {
+				$emailParams = @{
+					From = $EMAIL_FROM
+					To = $user
+					CC = $EMAIL_CC
+					Subject = $EMAIL_SUBJECT
+					Body = $msgHtml
+					Priority = "High"
+					DeliveryNotificationOption = @("OnSuccess", "OnFailure")
+					SmtpServer = $EMAIL_SMTP
+				}
+				# Override used for debugging purposes.
+				if (-Not [string]::IsNullOrEmpty($DEBUG_EMAIL_TO_OVERRIDE)) {
+					$emailsParams["To"] = $DEBUG_EMAIL_TO_OVERRIDE
+				}
+				try {
+					Send-MailMessage @emailParams -BodyAsHtml
+					$email_success = $true
+					$success_email_count++
+				} catch {
+					Write-Error $_
+					$error_count++
+				}
+				Start-Sleep -Seconds $EMAIL_SLEEP_SECS
 			}
-			# Override used for debugging purposes.
-			if (-Not [string]::IsNullOrEmpty($DEBUG_EMAIL_TO_OVERRIDE)) {
-				$emailsParams["To"] = $DEBUG_EMAIL_TO_OVERRIDE
-			}
-			try {
-				Send-MailMessage @emailParams -BodyAsHtml
-				$email_success = $true
-				$success_email_count++
-			} catch {
-				Write-Error $_
-				$error_count++
-			}
-			Start-Sleep -Seconds $EMAIL_SLEEP_SECS
 		}
 		
 		$counter++
@@ -555,6 +838,7 @@ $msgSystemTable
 		[PSCustomObject]@{
 			ContactUser = $user
 			Department = $department
+			SystemCount = ($systems | Measure).Count
 			Systems = ($systems | Select @{N="Name"; Expression={$name = $_.Name; if($_.IsIncompatible) { $name += " (!)" }; $name}}).Name  -join ","
 			SharedSystems = $has_shared_system
 			StaleSystems = $has_stale_system
@@ -574,6 +858,7 @@ $msgSystemTable
 }
 
 # Next, we'll also remove all users from the notification GPO and re-add only the ones we're sending emails to.
+# Make sure to exclude all the blacklisted users as well.
 $users = $contactusers_systems | % { $_.Group.ADUser | Select -ExpandProperty distinguishedname -Unique -First 1 }
 if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 	if (($users | Measure).Count -gt 0) {
@@ -603,5 +888,32 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 	}
 }
 
+# Send a report of results.
+if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
+	$emailParams = @{
+		From = $EMAIL_REPORT_FROM
+		Subject = $EMAIL_REPORT_SUBJECT
+		#Body = $msgHtml
+		#Priority = "High"
+		DeliveryNotificationOption = @("OnSuccess", "OnFailure")
+		SmtpServer = $EMAIL_SMTP
+	}
+	if (($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
+		$users = Get-ADUsersByGroup $EMAIL_REPORT_TO_GROUPS -Properties mail -Nested
+		$emailParams["To"] = $users | Select -ExpandProperty mail -Unique
+	} else {
+		$emailParams["To"] = $EMAIL_REPORT_TO
+	}
+	$emailParams["Body"] = @"
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
+
+<p><b>Skipped processing [{2}] systems (no valid contact, ineligible, or otherwise excluded). Please check [$EXPORT_SKIPPED_SYSTEMS_PATH] and email / update manually as needed.</b></p>
+
+<p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
+"@ -f ($emailed_users | Measure).Count, ($processed_systems | Measure).Count, ($skipped_systems | Measure).Count
+
+	#Send-MailMessage @emailParams -BodyAsHtml
+}
+		
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
