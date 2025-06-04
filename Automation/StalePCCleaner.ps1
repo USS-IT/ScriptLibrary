@@ -43,7 +43,7 @@ $DATE_WARNING = (Get-Date).AddDays(-30)
 $DATE_RETIREMENT = (Get-Date).AddDays(-90)
 # Date threshold to delete system out of AD entirely
 # If not set or $null this action will always be skipped
-#$DATE_REMOVAL = (Get-Date).AddDays(-180)
+$DATE_REMOVAL = (Get-Date).AddDays(-180)
 
 # Set the attribute synced from SOR for computer assignment.
 # This field will be emailed if they are past $warningDays inactive.
@@ -129,7 +129,6 @@ function Get-ADUserCached {
 		.NOTES
 		Saves a cache to $_ADUSERS.
 	#>
-
 	param(
 		[Parameter(Mandatory=$true,Position=0)]
 		[ValidateNotNullOrEmpty()]
@@ -439,7 +438,8 @@ $comps | ForEach-Object {
 			}
 		}
 		# Check if system is in an excluded OU.
-		If (-Not [string]::IsNullOrEmpty($ou) -And $ou -in $OU_EXCLUDE) {
+		# Using -match in this way should allow matching sub-OUs.
+		If (-Not [string]::IsNullOrEmpty($ou) -And ($OU_EXCLUDE.Where({$ou -match $_}) | Measure-Object).Count -gt 0) {
 			Write-Host("[{0}] Skipping action on [{1}] due to excluded OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
 			$actionTaken = "OU Excluded (Skipped)"
 			$skipProcessing = $true
@@ -459,7 +459,7 @@ $comps | ForEach-Object {
 			if ($_.DistinguishedName -notlike "CN=*,$OU_RETIREMENT") {
 			  try {
 				Write-Host("[{0}] Moving [{1}] to [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName, $OU_RETIREMENT)
-				# Move-ADObject $_.DistinguishedName -TargetPath $OU_RETIREMENT -WhatIf:$DryRun
+				Move-ADObject $_.DistinguishedName -TargetPath $OU_RETIREMENT -WhatIf:$DryRun
 				$actionTaken = "Moved"
 			  } catch {
 				  Write-Error $_
@@ -470,7 +470,7 @@ $comps | ForEach-Object {
 				if ($_.Enabled) {
 					try {
 						Write-Host("[{0}] Disabling [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
-						# Disable-ADAccount $_.DistinguishedName -WhatIf:$DryRun
+						Disable-ADAccount $_.DistinguishedName -WhatIf:$DryRun
 						$actionTaken = "Disabled"
 					} catch {
 						Write-Error $_
@@ -480,7 +480,7 @@ $comps | ForEach-Object {
 				} ElseIf ($DATE_REMOVAL -is [datetime] -And ($_.LastLogonDate -isnot [datetime] -Or $_.LastLogonDate -le $DATE_REMOVAL)) {
 					try {
 						Write-Host("[{0}] DELETING [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
-						# Remove-ADObject $_.DistinguishedName -Confirm:$false -WhatIf:$DryRun
+						Remove-ADObject $_.DistinguishedName -Confirm:$false -WhatIf:$DryRun
 						$actionTaken = "Deleted"
 					} catch {
 						Write-Error $_
@@ -572,6 +572,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 	</table>
 "@
 
+			Write-Verbose("To: $email")
 			Write-Verbose($msgHTML)
 			
 			# Only send the email if we have at least one valid system.
@@ -591,7 +592,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 			
 				try {
 					if (-Not $DryRun) {
-						#Send-MailMessage @emailParams -BodyAsHtml
+						Send-MailMessage @emailParams -BodyAsHtml
 					}
 					$email_success = $true
 					$success_email_count++
@@ -623,12 +624,14 @@ if ($logSystemsObj -ne $null) {
 	$logSystemsObj | Select $CSV_HEADER | Export-CSV $CSV_RESULTS_FP -NoTypeInformation -Force
 }
 
+# Stop logging
+Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+
 # Send a report of results.
 if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
 	$emailParams = @{
 		From = $EMAIL_REPORT_FROM
 		Subject = $EMAIL_REPORT_SUBJECT
-		#Body = $msgHtml
 		#Priority = "High"
 		DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 		SmtpServer = $EMAIL_SMTP
@@ -646,5 +649,5 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 "@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
 
 	Write-Host($emailParams.Body)
-	#Send-MailMessage @emailParams -BodyAsHtml
+	Send-MailMessage @emailParams -BodyAsHtml
 }
