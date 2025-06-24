@@ -52,7 +52,7 @@ param(
 	[string]$ToastText="The version of Windows on your computer requires an upgrade to avoid being blocked by Central IT. Please click on the Instructions button for more info.",
 	
 	[Parameter(Mandatory=$false)]
-	[string]$ToastTextLowSpace="Your computer does not have enough free space for a required upgrade. Please click on the Instructions button and see the Troubleshooting section for more info.",
+	[string]$ToastTextLowSpace="Your computer does not have enough free space for a required Windows upgrade. Please open a Help Desk ticket for assistance.",
 	
 	[Parameter(Mandatory=$false,
 	 ParameterSetName="ClickableLink")]
