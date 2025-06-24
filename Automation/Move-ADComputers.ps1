@@ -1,30 +1,19 @@
-<#
-	.SYNOPSIS
-	Move objects matching name filters to given OUs.
-	
-	.DESCRIPTION
-	Move objects matching name filters to given OUs. Requires RSAT tools.
-	
-	.NOTES
-	Looks in $OU_MapSearchbase for current AD structure to use for name filtering.
-	Any OUs starting in $OU_MapSearchbase will be added to name filtering in the form of "OUName-*".
-	IE, if it finds an OU named "USS-IT" then it will search for computers starting with "USS-IT-".
-	You may override this behavior using the $destOU_map hashtable.
-	$destOU_map hash table:
-	{
-		key = destination OU distinguishedname.
-		"inc" = array of partial computer names to include.
-		"ex" = optional array of partial computer names to exclude.
-	}
-	
-	Created: 10-18-22
-	Author: mcarras8
-	
-	Changelog
-	03-14-25 - MJC - Standardized documentation and uploaded to github
-	04-16-24 - MJC - Added emailed error reports and additional error handling
-	01-03-23 - MJC - Added CDI mapping for USS-OMA OU
-#>
+# Move objects matching name filters to given OUs.
+# Looks in $OU_MapSearchbase for current AD structure to use for name filtering.
+# Any OUs starting in $OU_MapSearchbase will be added to name filtering in the form of "OUName-*".
+# IE, if it finds an OU named "USS-IT" then it will search for computers starting with "USS-IT-".
+# You may override this behavior using the $destOU_map hashtable.
+#
+# $destOU_map hash table:
+#	key = destination OU distinguishedname.
+# 	"inc" = array of partial computer names to include.
+#	"ex" = optional array of partial computer names to exclude.
+# MJC 10-18-22
+# ---------------
+# Changelog
+# 1/3/23 - MJC - Added CDI mapping for USS-OMA OU
+# 4/16/24 - MJC - Added emailed error reports and additional error handling
+# ---------------
 <# --EXAMPLES--
 	$DC = "DC=win,DC=ad,DC=jhu,DC=edu"
 	$OU_MoveDestRoot = "OU=Computers,OU=USS,$DC"
@@ -35,7 +24,7 @@
 #>
 
 # Path and prefix for the Start-Transcript logfiles.
-$LOGFILE_PATH = ".\Logs"
+$LOGFILE_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Logs\Move-ADComputers"
 $LOGFILE_PREFIX = "Move-ADComputers"
 # Maximum number of days before rotating logfile.
 $LOGFILE_ROTATE_DAYS = 365
@@ -56,7 +45,8 @@ $OU_NameFilter = "USS-*"
 # Default destination root OU
 $OU_MoveDestRoot = "OU=Computers,OU=USS,$DC"
 # Array of OUs to search for computer objects that need to be moved
-$OU_MoveSearchbases = @("OU=USS-XX,OU=Computers,OU=USS,$DC","OU=USS-Retired,OU=Computers,OU=USS,$DC","OU=USS-LNR,OU=Computers,OU=USS,$DC")
+$OU_MoveSearchbases = @("OU=USS-XX,OU=Computers,OU=USS,$DC","OU=USS-LNR,OU=Computers,OU=USS,$DC")
+#$OU_MoveSearchbases = @("OU=USS-XX,OU=Computers,OU=USS,$DC","OU=USS-Retired,OU=Computers,OU=USS,$DC","OU=USS-LNR,OU=Computers,OU=USS,$DC")
 
 # Entries here will override the entries added when searching $OU_Searchbase.
 $destOU_map = @{
@@ -64,7 +54,7 @@ $destOU_map = @{
 	"OU=USS-SHWB,$OU_MoveDestRoot"		= @{ "inc"=@("USS-HW-","HW-HW-") }
 	"OU=USS-HD,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-DO-","USS-RDO") }
 	"OU=USS-LDL,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-LDL-","HW-LDL-","HW-CP-") }
-	"OU=USS-OMA,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-OMA-","HW-OMA-","USS-CDI-") }
+	"OU=USS-CDI,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-OMA-","HW-OMA-","USS-CDI-") }
     "OU=USS-PRS,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-PS-","USS-PRS-") }
 	"OU=USS-ROC,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-ROC-","HW-ROTC-","ROTC-") }
 	"OU=USS-SEAM,$OU_MoveDestRoot" 		= @{ "inc"=@("USS-SEAM-","HW-SEAM-","SEAM-") }
@@ -90,8 +80,15 @@ if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
 }
 
 # Start logging
-$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd).log"
-Start-Transcript -Path $_logfilepath -Append
+$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd)"
+try {
+	$_logfilepath = "${_logfilepath}.log"
+	Start-Transcript -Path $_logfilepath -Append
+} catch {
+	# If we get any error, try again with .1 appended in case it's a file lock.
+	$_logfilepath = "${_logfilepath}.1.log"
+	Start-Transcript -Path $_logfilepath -Append
+}
 
 $_scriptName = split-path $PSCommandPath -Leaf
 $errorCount = 0
