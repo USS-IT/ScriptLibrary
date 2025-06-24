@@ -931,7 +931,9 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 				} else {
 					$removeGroupMembers = $groupMembers | where {$_.distinguishedname -notin $users}
 					Write-Host("[{0}] Removing {1} out of {2} members from group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($removeGroupMembers | Measure).Count, ($groupMembers | Measure).Count, $NOTIFICATION_GROUP)
-					Remove-ADGroupMember $NOTIFICATION_GROUP -Members $removeGroupMembers -Confirm:$false -WhatIf:$DryRun
+					if (($removeGroupMembers | Measure).Count -gt 0) {
+						Remove-ADGroupMember $NOTIFICATION_GROUP -Members $removeGroupMembers -Confirm:$false -WhatIf:$DryRun
+					}
 					$users = $users | where {$_ -notin $groupMembers.distinguishedname}
 				}
 				Write-Host("[{0}] Adding {1} members to group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($users | Measure).Count, $NOTIFICATION_GROUP)
