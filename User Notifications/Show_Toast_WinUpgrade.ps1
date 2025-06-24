@@ -1,27 +1,30 @@
 <#
 	.SYNOPSIS
-	Shows a toast notification if the users system has not restarted in the given length of time (7 days by default).
+	Shows a toast notification if the Windows version is equal or older than -EOLVER.
 	
 	.DESCRIPTION
-	Shows a toast notification if the users system has not restarted in the given length of time (7 days by default).
-
-	.PARAMETER RestartAlertDays
-	Number of days before an alert is displayed. Default is 7.
+	Shows a toast notification if the Windows version is equal or older than -EOLVER.
+	
+	.PARAMETER EOLVER
+	Required build version of Windows to check against (e.g., 22621).
 	
 	.PARAMETER ToastTitle
 	Optional title for the toast notification. Default is "Alert from USS IT".
 	
 	.PARAMETER ToastText
-	Optional text for the toast notification. {0} will be substituted with # of days since last restart. Must be <= 175 characters. Default is "Your system requires a restart to keep running smoothly. Last Restart: {0} days ago."
+	Optional text for the toast notification. {0} will be substituted with the current build. Must be <= 175 characters. Default is "The version of Windows on your computer requires an upgrade to avoid being blocked by Central IT. Please click on the Instructions button for more info."
+	
+	.PARAMETER ToastTextLowSpace
+	Optional text to show if it detects less than 23GB of free space to install the upgrade. {0} will be substituted with the amount of free space. Must be <= 175 characters. Default is "Your computer does not have enough free space for a required upgrade. Please click on the Instructions button and see the Troubleshooting section for more info."
 	
 	.PARAMETER ClickableLink
-	Optional URL link to assign to a clickable button.
+	Optional URL link to assign to a clickable button. NOTE: THIS URL must be url-encoded! Default: https://t.jh.edu/USS-WindowsUpgrade
 	
 	.PARAMETER ClickableLinkText
-	Required text for the clickable button if -ClickableLink is given.
+	Required text for the clickable button if -ClickableLink is given. Default: Instructions
 	
 	.PARAMETER Duration
-	Duration (in minutes) before the alert is automatically dismissed. Default is 60 minutes.
+	Duration (in minutes) before the alert is automatically dismissed and -ShowSnoozeTimer is not given. Default is 15 minutes.
 	
 	.PARAMETER ShowSnoozeTimer
 	Show a snoozable timer instead of automatically dismissing.
@@ -32,30 +35,35 @@
 	.NOTES
 	Must be run under the user's context.
 	
-	Created: 3-23-23
 	Author: mcarras8
+	
+	04-09-25 mcarras8 Added more parameters and renamed to "Show_Toast_WinUpgrade".
+	03-24-23 mcarras8 Initial creation
 #>
 [cmdletbinding(DefaultParametersetName='None')]
 param(
-	[Parameter(Mandatory=$false)]
-	[uint64]$RestartAlertDays=7,
+	[Parameter(Mandatory=$true)]
+	[uint64]$EOLVER,
 	
 	[Parameter(Mandatory=$false)]
 	[string]$ToastTitle="Alert from USS IT",
 	
 	[Parameter(Mandatory=$false)]
-	[string]$ToastText="Your system requires a restart to keep running smoothly. Last Restart: {0} days ago.",
+	[string]$ToastText="The version of Windows on your computer requires an upgrade to avoid being blocked by Central IT. Please click on the Instructions button for more info.",
+	
+	[Parameter(Mandatory=$false)]
+	[string]$ToastTextLowSpace="Your computer does not have enough free space for a required Windows upgrade. Please open a Help Desk ticket for assistance.",
 	
 	[Parameter(Mandatory=$false,
 	 ParameterSetName="ClickableLink")]
-	[string]$ClickableLink,
+	[string]$ClickableLink="https://t.jh.edu/USS-WindowsUpgrade",
 	
 	[Parameter(Mandatory=$true,
 	 ParameterSetName="ClickableLink")]
-	[string]$ClickableLinkText,
+	[string]$ClickableLinkText="Instructions",
 	
 	[Parameter(Mandatory=$false)]
-	[uint32]$Duration=60,
+	[uint32]$Duration=15,
 	
 	[Parameter(Mandatory=$false)]
 	[switch]$ShowSnoozeTimer,
@@ -63,6 +71,10 @@ param(
 	[Parameter(Mandatory=$false)]
 	[switch]$ClearOldNotifications
 )
+# -- START CONFIGURATION --
+# The amount of GB required for the upgrade.
+$UPGRADE_SPACE_REQUIRED_GB = 23
+# -- END CONFIGURATION --
 
 # -- START FUNCTIONS --
 <#
@@ -132,7 +144,7 @@ function Show-Toast {
 			Write-Error $_
 		}
 	}
-	
+
 	# NOT cast to XML
 	if ($ShowSnoozeTimer) {
 		$Actions = @"
@@ -201,30 +213,42 @@ function Show-Toast {
 }
 # -- END FUNCTIONS --
 
-If($ToastText.Length -gt 175) {
-	Write-Warning "-ToastText is too long, text may be truncated"
-}
-
-try {
-	# Grab uptime from WMI. If 
-	$uptimeDays = ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime((Get-WmiObject Win32_OperatingSystem | Select -ExpandProperty LastBootUpTime))) | Select -ExpandProperty Days
-	if ($uptimeDays -ge $RestartAlertDays) {
-		# Add extra parameters before calling the function.
-		$extraParams = @{}
-		if (-Not [string]::IsNullorWhitespace($ClickableLink)) {
-			$extraParams.Add("ClickableLink", $ClickableLink)
-			$extraParams.Add("ClickableLinkText", $ClickableLinkText)
+# Grab version from registry.
+$ver = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).CurrentBuild
+if (-Not [string]::IsNullOrWhitespace($ver) -And $ver -le $EOLVER) {
+	$toastmsg = ($ToastText -f $ver)
+	# Display a different message if computer is low on free space.
+	try {
+		if (-Not [string]::IsNullOrWhitespace($ToastTextLowSpace)) {
+			$freespace = Get-Volume -DriveLetter (${ENV:SYSTEMDRIVE} -replace ":","") | Select -ExpandProperty SizeRemaining
+			if ($freespace -ne $null) {
+				$freespace = [math]::round($freespace /1Gb, 2)
+				if ( $freespace -le $UPGRADE_SPACE_REQUIRED_GB) {
+					$toastmsg = ($ToastTextLowSpace -f $freespace)
+				}
+			}
 		}
-		if ($ShowSnoozeTimer) {
-			$extraParams.Add("ShowSnoozeTimer", $true)
-		} else {
-			$extraParams.Add("Duration", $Duration)
-		}
-		if ($ClearOldNotifications) {
-			$extraParams.Add("ClearOldNotifications", $true)
-		}
-		Show-Toast -Text ($ToastText -f $uptimeDays) @extraParams
+	} catch {}
+	
+	If($toastmsg.Length -gt 175) {
+		Write-Warning "Toast text is > 175 characters, text may be truncated"
 	}
-} catch {
-	Write-Error $_
+
+	# Add extra parameters before calling the function.
+	$extraParams = @{}
+	if (-Not [string]::IsNullorWhitespace($ClickableLink)) {
+		$extraParams.Add("ClickableLink", $ClickableLink)
+		$extraParams.Add("ClickableLinkText", $ClickableLinkText)
+	}
+	if ($ShowSnoozeTimer) {
+		$extraParams.Add("ShowSnoozeTimer", $true)
+	} else {
+		$extraParams.Add("Duration", $Duration)
+	}
+	if ($ClearOldNotifications) {
+		$extraParams.Add("ClearOldNotifications", $true)
+	}
+		
+	# Show a dismissable toast notification with a clickable link for the current user.
+	Show-Toast -Text $toastmsg @extraParams
 }
