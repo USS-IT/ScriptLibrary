@@ -11,6 +11,12 @@
 	.PARAMETER DryRun
 	Only output results. Do not send emails or make any other changes (-WhatIf).
 	
+	.PARAMETER DebugEmailOverride
+	Send an email to the given address instead of the contact user. This overrides -DryRun for emailing.
+	
+	.PARAMETER DebugEmailLimit
+	Limit the number of emails sent (Default: 1).
+	
 	.PARAMETER Verbose
 	Enable additional verbose/debugging output.
 	
@@ -26,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	06-23-25 - mcarras8 - Switched back to 23H2. Other tweaks. Ready for prod.
 	03-26-25 - mcarras8 - Fixed Group management. Added Department to output and -Verbose support. Other fixes/tweaks.
 	03-14-25 - mcarras8 - Initial upload.
 #>
@@ -34,14 +41,21 @@ param(
 	[switch]$ManageGroupOnly,
 	
 	[Parameter(Mandatory=$false)]
-	[switch]$DryRun
+	[switch]$DryRun,
+	
+	[Parameter(Mandatory=$false)]
+	[string]$DebugEmailOverride,
+	
+	[Parameter(Mandatory=$false)]
+	[string]$DebugEmailLimit=1
 )
 		
 # -- START CONFIGURATION --
 # This should be the previous version before the latest build version.
-$EOLVER=22631		# Windows 11, 23H2
+$EOLVER=22621		# Windows 11, 22H2
 # This should be the version offered in the upgrade.
-$UPGRADEVER=26100	# Windows 11, 24H2
+$UPGRADEVER=22631	# Windows 11, 23H2
+# $UPGRADEVER=26100   # Windows 11, 24H2
 # The searchbase to search for matching computers in AD.
 $SEARCHBASE = "OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu"
 # Array of OUs to always exclude
@@ -97,7 +111,10 @@ $SORURL_ASSETTAG = "https://jh-uss.snipe-it.io/hardware/bytag?assetTag="
 # Email settings.
 $EMAIL_SMTP = 'smtp.johnshopkins.edu'
 $EMAIL_FROM = 'Jerome.Powell@jhu.edu'
+# CC a copy of each email to the given address (make sure rules are enabled).
 $EMAIL_CC = @('Jerome.Powell@jhu.edu','mcarras8@jhu.edu')
+# Optional BCC.
+$EMAIL_BCC = 'ussitservices@jhu.edu'
 $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # This is the first part of each email. Allows for HTML.
 # Each email will be in the format of either:
@@ -108,7 +125,8 @@ $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # <Table with system info>
 # <System list items>
 # $EMAIL_FOOTER_HTML
-$EMAIL_INTRO_HTML = @"<p>This is an automated message.</p>
+$EMAIL_INTRO_HTML = @"
+<p>This is an automated message.</p>
 <p>You are receiving this email because your system{0} is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
  
 <p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
@@ -139,17 +157,19 @@ $EMAIL_FOOTER_HTML = ""
 $EMAIL_DETAILED_TABLE_MULTIPLE_SYSTEMS_ONLY = $true
 # If set, do not email referencing only desktops/aios.
 $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS = $false
+# If set, show more detailed notes (default: false).
+$EMAIL_DETAILED_NOTES = $false
 # Amount of time in seconds to sleep between emails.
-$EMAIL_SLEEP_SECS = 5
-# Debugging override. Send emails to this address instead of the listed contact user. Used for testing, should be commented out otherwise.
-$DEBUG_EMAIL_TO_OVERRIDE = "mcarras8@jhu.edu"
-# Debugging override. Only send the given number of emails. Used for testing, should be commented out otherwise.
-$DEBUG_EMAIL_LIMIT = 1
+$EMAIL_SLEEP_SECS = 8
+# Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
+# The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
+$EMAIL_SLEEP_EXTRA_MOD=10
+$EMAIL_SLEEP_EXTRA_SECS = 30
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
-# $EMAIL_REPORT_TO = @("")
-$EMAIL_REPORT_TO_GROUPS = @("USS-IT-JHEDs")
+#$EMAIL_REPORT_TO = 'ussitservices@jhu.edu'
+$EMAIL_REPORT_TO = @("USS-IT-JHEDs")
 $EMAIL_REPORT_SUBJECT = "Weekly Results from Windows 11 Upgrade Campaign"
 
 # Path to systems which report being ineligible for upgrade.
@@ -164,10 +184,10 @@ $EXPORT_PROCESSED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports
 $EXPORT_EMAILED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_emailed.csv"
 
 # Path and prefix for the Start-Transcript logfiles.
-$LOGFILE_PATH = ".\Logs"
+$LOGFILE_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Logs\WinUpgradeAutomation"
 $LOGFILE_PREFIX = "winupgradeautomation"
 # Maximum number of days before rotating logfile.
-$LOGFILE_ROTATE_DAYS = 90
+$LOGFILE_ROTATE_DAYS = 180
 # -- END CONFIGURATION --
 
 # -- FUNCTION START --
@@ -413,9 +433,27 @@ if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
 }
 
 # Start logging
-$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd).log"
-Start-Transcript -Path $_logfilepath -Append
-	
+$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd)"
+try {
+	$_logfilepath = "${_logfilepath}.log"
+	Start-Transcript -Path $_logfilepath -Append
+} catch {
+	# If we get any error, try again with .1 appended in case it's a file lock.
+	$_logfilepath = "${_logfilepath}.1.log"
+	Start-Transcript -Path $_logfilepath -Append
+}
+
+# List parameters given.
+if($ManageGroupOnly) {
+	Write-Host("[{0}] -ManageGroupOnly switch given. Emails will not be sent." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+}
+if($DryRun) {
+	Write-Host("[{0}] -DryRun switch given. Emails will not be sent (unless -DebugEmailOverride is given) and groups will not be managed. Reports will still be exported." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+}
+if(-Not [string]::IsNullOrEmpty($DebugEmailOverride)) {
+	Write-Host("[{0}] -DebugEmailOverride [$DebugEmailOverride] with limit of [$DebugEmailLimit]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+}
+
 # Get enabled computers matching $eolver or lower.
 $_props = $COMP_PROPS.Values | % { $_ }
 $comps = Get-ADComputer -Searchbase $searchbase -Filter {Enabled -eq $true} -Properties $_props | where {$_.OperatingSystemVersion -match "10.0 \((\d+)\)" -and $Matches.1 -ne $null -and ($Matches.1 -as [int]) -is [int] -And $Matches.1 -le $eolver -And $_.distinguishedname -notin $EXCLUDE_OUS}
@@ -429,9 +467,15 @@ $comps | Select $selectarray | Export-CSV -NoTypeInformation -Force $EXPORT_ALL_
 Write-Host("[{0}] Exported {1} systems requiring Windows 11 upgrade collected from AD to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count, $EXPORT_ALL_SYSTEMS_PATH)
 
 # Get excluded contact users.
-$adUserBlacklist = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_GROUPS -Nested -Verbose | Select -Unique
+$adUserBlacklist = $null
+if (($CONTACTUSER_EXCLUDE_GROUPS | Measure).Count -gt 0) {
+	$adUserBlacklist = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_GROUPS -Nested -Verbose | Select -Unique
+}
 $adUserBlacklistCount = ($adUserBlacklist | Measure).Count
-$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+$itUsers = $null
+if (($CONTACTUSER_EXCLUDE_ITGROUPS | Measure).Count -gt 0) {
+	$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+}
 $itUsersCount = ($itUsers | Measure).Count
 
 # Get included contact users.
@@ -671,7 +715,7 @@ if ($ManageGroupOnly) {
 				$has_incompatible_system = $true
 			}
 			$assettag = $systeminfo.AssetTag
-			if( $ASSET_TAG_IS_NUMERIC -And -Not $assettag -match "/d+" ) {
+			if( $ASSET_TAG_IS_NUMERIC -And -Not $assettag -match "^\d+$" ) {
 				$assettag = $null
 			}
 			$formFactor = $systeminfo.FormFactor
@@ -749,13 +793,14 @@ if ($ManageGroupOnly) {
 		</table>
 "@
 			# -- BODY - NOTES --
-			if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
-				$msgHtml += @"
-		<p>* Desktops and all-in-ones will be upgraded automatically pending next restart.</p>
+			# Set $EMAIL_DETAILED_NOTES to display more detailed notes.
+			if (-Not $EMAIL_DETAILED_NOTES) {
+				if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
+					$msgHtml += @"
+			<p>* Desktops and all-in-ones will be upgraded automatically pending next restart.</p>
 "@
-		}
-<#
-			if ($has_shared_system -Or $has_stale_system -Or $has_unassigned_system -Or $has_incompatible_system) {
+				}
+			} elseif ($has_shared_system -Or $has_stale_system -Or $has_unassigned_system -Or $has_incompatible_system) {
 				$msghtml += @"
 	<br />
 	<b>Notes</b>
@@ -797,12 +842,14 @@ if ($ManageGroupOnly) {
 		if (-Not [string]::IsNullOrEmpty($EMAIL_FOOTER_HTML)) {
 			$msgHtml += $EMAIL_FOOTER_HTML
 		}
-		if (-Not [string]::IsNullOrEmpty($DEBUG_EMAIL_TO_OVERRIDE)) {
-			$msgHtml += "<p>DEBUG_EMAIL_TO_OVERRIDE enabled. This email would have been sent to [$user].</p>"
+		if (-Not [string]::IsNullOrEmpty($DebugEmailOverride)) {
+			$msgHtml += "<p>-DebugEmailOverride enabled. This email would have been sent to [$user].</p>"
 		}
 
+		# -DebugEmailOverride will override -DryRun.
+		# If -DebugEmailOverride and -DebugEmailLimit is given, only email up to the limit.
 		$email_success = $false
-		if (-Not $DryRun -And (-Not $DEBUG_EMAIL_LIMIT -Or $success_email_count -le $DEBUG_EMAIL_LIMIT)) {
+		if (-Not $DryRun -Or (-Not [string]::IsNullOrEmpty($DebugEmailOverride) -And (-Not $DebugEmailLimit -Or $success_email_count -le $DebugEmailLimit))) {
 			# If all systems are desktops and $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS is set to $false.
 			if (-Not $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS -And $desktop_count -eq $o.Count) {
 				Write-Host("[{0}] Skipping email for {1} - only has desktops/aios and `$EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS is set to false" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $user)
@@ -818,18 +865,29 @@ if ($ManageGroupOnly) {
 					SmtpServer = $EMAIL_SMTP
 				}
 				# Override used for debugging purposes.
-				if (-Not [string]::IsNullOrEmpty($DEBUG_EMAIL_TO_OVERRIDE)) {
-					$emailsParams["To"] = $DEBUG_EMAIL_TO_OVERRIDE
+				if (-Not [string]::IsNullOrEmpty($DebugEmailOverride)) {
+					$emailParams["To"] = $DebugEmailOverride
 				}
+				# Also send to BCC if set.
+				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
+					$emailParams["BCC"] = $EMAIL_BCC
+				}
+				$sleep_secs = $EMAIL_SLEEP_SECS
 				try {
 					Send-MailMessage @emailParams -BodyAsHtml
 					$email_success = $true
 					$success_email_count++
+					
+					if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+					}
 				} catch {
 					Write-Error $_
 					$error_count++
+					$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
 				}
-				Start-Sleep -Seconds $EMAIL_SLEEP_SECS
+				# Wait until sending out the next email.
+				Start-Sleep -Seconds $sleep_secs
 			}
 		}
 		
@@ -889,18 +947,20 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 }
 
 # Send a report of results.
-if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
+if ($DryRun) {
+	Write-Host("[{0}] Skipping email report due to -DryRun switch." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+} elseif ($EMAIL_REPORT_TO -ne $null) {
 	$emailParams = @{
 		From = $EMAIL_REPORT_FROM
 		Subject = $EMAIL_REPORT_SUBJECT
-		#Body = $msgHtml
 		#Priority = "High"
 		DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 		SmtpServer = $EMAIL_SMTP
 	}
-	if (($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
-		$users = Get-ADUsersByGroup $EMAIL_REPORT_TO_GROUPS -Properties mail -Nested
-		$emailParams["To"] = $users | Select -ExpandProperty mail -Unique
+	if ($EMAIL_REPORT_TO -is [array]) {
+		$report_users = $null
+		$report_users = Get-ADUsersByGroup $EMAIL_REPORT_TO -ADProperties mail -Nested -Verbose
+		$emailParams["To"] = $report_users | Select -ExpandProperty mail -Unique
 	} else {
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
@@ -912,7 +972,7 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
 "@ -f ($emailed_users | Measure).Count, ($processed_systems | Measure).Count, ($skipped_systems | Measure).Count
 
-	#Send-MailMessage @emailParams -BodyAsHtml
+	Send-MailMessage @emailParams -BodyAsHtml
 }
 		
 # Stop logging
