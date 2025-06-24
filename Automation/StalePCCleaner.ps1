@@ -63,7 +63,9 @@ $OU_RETIREMENT = 'OU=USS-Retired,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # List of OUs to exclude from processing.
 $OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
 # Computers in this group will also be excluded.
-# $OU_EXCLUDEGroups = @('')
+$Comp_Group_EXCLUDE = 'USS-StalePCExceptionComps'
+# If true, still delete the systems in $Comp_Group_EXCLUDE after $DATE_REMOVAL has passed.
+$Comp_Group_EXCLUDE_Delete = $true
 # Computers assigned to users in this group will also be excluded. Requires $PROP_ASSIGNMENT to be set and valid.
 $ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
 # If set, still email assigned users of excluded systems.
@@ -77,8 +79,9 @@ $CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Ema
 # Automated email settings.
 $EMAIL_ASSIGNEDUSER = $true
 $EMAIL_SMTP = 'smtp.johnshopkins.edu'
-$EMAIL_FROM = 'Jerome.Powell@jhu.edu'
+$EMAIL_FROM = 'mcarras8@jhu.edu'
 $EMAIL_CC = @('Jerome.Powell@jhu.edu','mcarras8@jhu.edu')
+$EMAIL_BCC = 'ussitservices@jhu.edu'
 $EMAIL_SUBJECT = "[USS-IT] Inactive System Alert"
 $EMAIL_INTRO_HTML = @"
 <p>This is an automated message.</p>
@@ -89,7 +92,11 @@ $EMAIL_INTRO_HTML = @"
 <p>Thank you for your cooperation.</p>
 "@
 # Number of seconds to sleep in-between each email.
-$EMAIL_SLEEP_SECS = 5
+$EMAIL_SLEEP_SECS = 10
+# Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
+# The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
+$EMAIL_SLEEP_EXTRA_MOD=10
+$EMAIL_SLEEP_EXTRA_SECS = 30
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
@@ -98,7 +105,7 @@ $EMAIL_REPORT_TO = @("ussitservices@jhu.edu")
 $EMAIL_REPORT_SUBJECT = "Results from Stale PC Cleaner script"
 
 # Path and prefix for the Start-Transcript logfiles.
-$LOGFILE_PATH = ".\Logs"
+$LOGFILE_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Logs\StalePCCleaner"
 $LOGFILE_PREFIX = "stalepccleaner"
 # Maximum number of days before rotating logfile.
 $LOGFILE_ROTATE_DAYS = 90
@@ -346,8 +353,15 @@ if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
 }
 
 # Start logging
-$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd).log"
-Start-Transcript -Path $_logfilepath -Append
+$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd)"
+try {
+	$_logfilepath = "${_logfilepath}.log"
+	Start-Transcript -Path $_logfilepath -Append
+} catch {
+	# If we get any error, try again with .1 appended in case it's a file lock.
+	$_logfilepath = "${_logfilepath}.1.log"
+	Start-Transcript -Path $_logfilepath -Append
+}
 
 if ($DryRun) {
 	Write-Host("[{0}] -DryRun set. Only output results to file/console. Using -WhatIf or otherwise skipping actions." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
@@ -358,9 +372,11 @@ if ($DryRun) {
 # Computers with LastLogonDate older than $DATE_RETIREMENT will be moved to the Retired OU if they haven't already.
 # If they are already in the Retired OU, they will be disabled.
 # If they are already disabled, and if $DATE_REMOVAL is set, they will be deleted out of AD.
-$props = @("Name","LastLogonDate")
+
+# Compute assigned users excluded from processing.
 $excludedUsers = $null
 $excludedUsersCount = 0
+$props = @("Name","LastLogonDate")
 if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT)) {
 	$props += @($PROP_ASSIGNMENT)
 	# If we also have groups to exclude
@@ -375,12 +391,23 @@ if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT)) {
 		}
 	}
 }
+# Compute additional properties for Get-ADComputer.
 if (-Not [string]::IsNullOrWhitespace($PROP_ASSETTAG)) {
 	$props += @($PROP_ASSETTAG)
 }
 if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
 	$props += @($PROP_FORMFACTOR)
 }
+
+# Get list of excluded computers.
+# These may still be deleted if $Comp_Group_EXCLUDE_Delete is set to true.
+$excludedComps = $null
+$excludedCompsCount = 0
+if (-not [string]::IsNullOrWhitespace($Comp_Group_EXCLUDE)) {
+	$excludedComps = Get-ADGroupMember $Comp_Group_EXCLUDE -Recursive | where {$_.objectClass -eq "computer"}
+	$excludedCompsCount = ($excludedComps | Measure).Count
+}
+	
 # Hash table of users to email.
 $contactUserSystems = @{}
 # Hash table of systems to add messages for.
@@ -444,7 +471,7 @@ $comps | ForEach-Object {
 			$actionTaken = "OU Excluded (Skipped)"
 			$skipProcessing = $true
 		}
-			
+		
 		# If the system is past retirementDate.
 		# Assume a null LastLogonDate is the same as being past all retirement dates.
 		# Skip action on this item if its assigned to an excluded user or in an excluded OU.
@@ -455,8 +482,16 @@ $comps | ForEach-Object {
 				$contactEmail = $null
 			}
 		} elseif ($_.LastLogonDate -isnot [datetime] -Or $_.LastLogonDate -le $DATE_RETIREMENT) {
+			$onlyDelete = $false
+			# Check if we have any excluded computers. If so, 
+			If ($excludedCompsCount -gt 0 -And $_.DistinguishedName -in $excludedComps.DistinguishedName) {
+				Write-Host("[{0}] Computer [{1}] found in exclusion group [$Comp_Group_EXCLUDE], only deleting if matching criteria (`$Comp_Group_EXCLUDE_Delete set to $Comp_Group_EXCLUDE_Delete)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+				$contactEmail = $null
+				$onlyDelete = $Comp_Group_EXCLUDE_Delete
+			}
+			
 			# If the computer has not already been moved.
-			if ($_.DistinguishedName -notlike "CN=*,$OU_RETIREMENT") {
+			if ($_.DistinguishedName -notlike "CN=*,$OU_RETIREMENT" -And -Not $onlyDelete) {
 			  try {
 				Write-Host("[{0}] Moving [{1}] to [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName, $OU_RETIREMENT)
 				Move-ADObject $_.DistinguishedName -TargetPath $OU_RETIREMENT -WhatIf:$DryRun
@@ -467,7 +502,7 @@ $comps | ForEach-Object {
 			  }
 			} else {
 				# If computer has already been moved to the Retirement OU.
-				if ($_.Enabled) {
+				if ($_.Enabled -And -Not $onlyDelete) {
 					try {
 						Write-Host("[{0}] Disabling [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
 						Disable-ADAccount $_.DistinguishedName -WhatIf:$DryRun
@@ -486,7 +521,7 @@ $comps | ForEach-Object {
 						Write-Error $_
 						$error_count++
 					}
-				} else {
+				} elseif (-Not $_.Enabled) {
 					Write-Host("[{0}] Already disabled [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
 					$actionTaken = "Disabled already"
 				}
@@ -589,18 +624,29 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 					DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 					SmtpServer = $EMAIL_SMTP
 				}
+				
+				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
+					$emailParams["BCC"] = $EMAIL_BCC
+				}
 			
+				$sleep_secs = $EMAIL_SLEEP_SECS
 				try {
 					if (-Not $DryRun) {
 						Send-MailMessage @emailParams -BodyAsHtml
 					}
 					$email_success = $true
 					$success_email_count++
+					
+					if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+					}
 				} catch {
 					Write-Error $_
 					$error_count++
+					$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
 				}
-				Start-Sleep -Seconds $EMAIL_SLEEP_SECS
+				# Wait until sending out the next email.
+				Start-Sleep -Seconds $sleep_secs
 			}
 			# If we successfully sent an email, make sure to log it.
 			if ($email_success) {
@@ -623,9 +669,6 @@ Write-Host("[{0}] Saving results for {1} systems to [{2}]" -f (Get-Date -Format 
 if ($logSystemsObj -ne $null) {
 	$logSystemsObj | Select $CSV_HEADER | Export-CSV $CSV_RESULTS_FP -NoTypeInformation -Force
 }
-
-# Stop logging
-Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 
 # Send a report of results.
 if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
@@ -651,3 +694,6 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 	Write-Host($emailParams.Body)
 	Send-MailMessage @emailParams -BodyAsHtml
 }
+
+# Stop logging
+Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
