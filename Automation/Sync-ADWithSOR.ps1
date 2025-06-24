@@ -1,21 +1,11 @@
-<#
-	.SYNOPSIS
-	Syncs information on assets from the System-Of-Record (Snipe-It) with AD.
-	
-	.DESCRIPTION
-	Syncs information on assets from the System-Of-Record (Snipe-It) with AD.
-	
-	.NOTES
-	Requirements:
-	* RSAT: Active Directory PowerShell module.
-	
-	Created: 4-9-24
-	Author: mcarras8
-
-	Changelog
-	03-14-25 - MJC - Standardized documentation and uploaded to github under ScriptsLibrary.
-	04-16-24 - MJC - Added emailed error reports and changelog.
-#>
+# MJC 4-9-24
+# Syncs information on assets from the System-Of-Record (SOR) with AD.
+#
+# Requirements:
+# * RSAT: Active Directory PowerShell module.
+# -- Changelog --
+# 4-16-24 - MJC - Added emailed error reports and changelog.
+# ---------------
 
 # -- START CONFIGURATION --
 $CSV_IMPORT_FILEPATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Exports\assets_snipeit_latest.csv"
@@ -68,7 +58,7 @@ $DESCRIPTION_FORMAT_ARRAY = @("assigned_to", "Department", "asset_tag", "locatio
 $ASSET_RESTRICT_WHERE_SCRIPTBLOCK = {$_.Category -eq "PC" -or $_.Category -eq "Mac"}
 
 # Path and prefix for the Start-Transcript logfiles.
-$LOGFILE_PATH = ".\Logs"
+$LOGFILE_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\Logs\Sync-ADWithSOR"
 $LOGFILE_PREFIX = "sync-adwithsor"
 # Maximum number of days before rotating logfile.
 $LOGFILE_ROTATE_DAYS = 90
@@ -90,8 +80,15 @@ if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
 }
 
 # Start logging
-$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd).log"
-Start-Transcript -Path $_logfilepath -Append
+$_logfilepath = "${LOGFILE_PATH}\${LOGFILE_PREFIX}_$(get-date -f yyyy-MM-dd)"
+try {
+	$_logfilepath = "${_logfilepath}.log"
+	Start-Transcript -Path $_logfilepath -Append
+} catch {
+	# If we get any error, try again with .1 appended in case it's a file lock.
+	$_logfilepath = "${_logfilepath}.1.log"
+	Start-Transcript -Path $_logfilepath -Append
+}
 
 # -- START FUNCTIONS --
 
