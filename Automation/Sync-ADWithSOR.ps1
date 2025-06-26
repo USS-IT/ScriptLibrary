@@ -70,9 +70,14 @@ $EMAIL_ERROR_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
 # Can be string or array of strings.
 $EMAIL_ERROR_REPORT_TO = @('mcarras8@jhu.edu','ussitservices@jhu.edu')
 
+# DEBUG Options
+# Enables additional more verbose debug logging.
+$DEBUG_LOGGING = $false
+
 # -- END CONFIGURATION --
 
 # -- START --
+$dateStart = Get-Date
 
 # Rotate log files
 if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
@@ -133,12 +138,20 @@ if($ASSET_SYNC_MAP.ContainsKey($LAST_UPDATE_ATTR)) {
 
 # Get assets from SOR imported CSV and AD. Limit to categories of PC or Mac.
 $sor_assets = Import-CSV $CSV_IMPORT_FILEPATH | where $ASSET_RESTRICT_WHERE_SCRIPTBLOCK
+Write-Host("[{0}] [{1}] assets imported from SOR export [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($sor_assets | Measure).Count, $CSV_IMPORT_FILEPATH)
 $ad_properties = $ASSET_SYNC_MAP.Values | foreach { $_ }
 $ad_assets = Import-AssetsFromAD -Properties $ad_properties -SearchBase $AD_IMPORT_SEARCHBASES -Verbose
 
 # Loop over all matching assets.
+$change_counter=0
 foreach($asset in $sor_assets) {
+	if ($DEBUG_LOGGING) {
+		Write-Host("[{0}] Processing SOR asset [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $asset.$ASSET_FIELD_NAME)
+	}
 	If (($ad_asset = $ad_assets | where {$_.Name -eq $asset.$ASSET_FIELD_NAME}) -And -Not [string]::IsNullOrEmpty($ad_asset.Name)) {
+		if ($DEBUG_LOGGING) {
+			Write-Host("[{0}] Found AD asset for [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name)
+		}
 		$replace_attrs = @{}
 		$clear_attrs = @()
 		$assigned_to = $null
@@ -149,6 +162,10 @@ foreach($asset in $sor_assets) {
 				$assigned_to = $Matches[1]
 			}
 		}
+		if ($DEBUG_LOGGING) {
+			Write-Host("[{0}] [{1}] assigned_to={2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $assigned_to)
+		}
+		
 		# Loop over each mapped field key.
 		foreach($key in $ASSET_SYNC_MAP.Keys) {
 			$prop = $ASSET_SYNC_MAP.$key
@@ -172,6 +189,8 @@ foreach($asset in $sor_assets) {
 					Write-Host("[{0}] [{1}] attr={2} [{3}] -ne [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 					$replace_attrs.Add($prop, $sor_value)
 				}
+			} elseif ($DEBUG_LOGGING) {
+				Write-Host("[{0}] [{1}] attr={2} [{3}] -eq [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 			}
 		}
 		# Loop over the fields to generate a description.
@@ -188,6 +207,8 @@ foreach($asset in $sor_assets) {
 		if ($computed_description -ne $ad_asset.description) {
 			Write-Host("[{0}] [{1}] attr=description [{2}] -ne [{3}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $ad_asset.description, $computed_description)
 			$replace_attrs.Add("description", $computed_description)
+		} elseif ($DEBUG_LOGGING) {
+			Write-Host("[{0}] [{1}] No need to update description: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $ad_asset.description)
 		}
 		# Replace or clear attributes for this ad object (if any).
 		if($replace_attrs.Count -gt 0 -Or $clear_attrs.Count -gt 0) {
@@ -205,6 +226,7 @@ foreach($asset in $sor_assets) {
 			if($clear_attrs.Count -gt 0) {
 				try {
 					Set-ADComputer $ad_asset.distinguishedname -Replace $replace_attrs -Clear $clear_attrs
+					$change_counter++
 				} catch {
 					Write-Error $_
 					$error_count++
@@ -217,11 +239,17 @@ foreach($asset in $sor_assets) {
 					$error_count++
 				}
 			}
+		} else {
+			Write-Host("[{0}] [{1}] Nothing to update" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name)
 		}
 	}
 }
+Write-Host("[{0}] {1} AD computers updated" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $change_counter)
 
 Write-Host("[{0}] Caught {1} errors" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $error_count)
+
+$runtimeDiff = ((Get-Date) - $dateStart)
+Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
 
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
