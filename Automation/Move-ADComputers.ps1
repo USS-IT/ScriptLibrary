@@ -73,6 +73,9 @@ $OUAliases = @{
 # -- END CONFIGURATION --
 
 # -- START --
+$dateStart = Get-Date
+$_scriptName = split-path $PSCommandPath -Leaf
+$errorCount = 0
 
 # Rotate log files
 if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
@@ -89,9 +92,6 @@ try {
 	$_logfilepath = "${_logfilepath}.1.log"
 	Start-Transcript -Path $_logfilepath -Append
 }
-
-$_scriptName = split-path $PSCommandPath -Leaf
-$errorCount = 0
 
 # Add additional results from current AD structure.
 foreach ($ou in Get-ADOrganizationalUnit -Searchbase $OU_MapSearchbase -Filter "Name -LIKE '$OU_NameFilter'") {
@@ -152,6 +152,9 @@ foreach ($dn in $moveQueue.Keys) {
 }
 
 Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $errorCount)
+
+$runtimeDiff = ((Get-Date) - $dateStart)
+Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
 
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null

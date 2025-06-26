@@ -424,6 +424,7 @@ function Get-ADUsersByGroup {
 # -- FUNCTION END --
 
 # -- START --
+$dateStart = Get-Date
 $error_count = 0
 $_scriptName = split-path $PSCommandPath -Leaf
 
@@ -976,6 +977,11 @@ if ($DryRun) {
 
 	Send-MailMessage @emailParams -BodyAsHtml
 }
-		
+
+Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $errorCount)
+	
+$runtimeDiff = ((Get-Date) - $dateStart)
+Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
+
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
