@@ -1,9 +1,9 @@
 <#
 	.SYNOPSIS
-	Uses WMI to query an online computer's operating system info. If the system is offline, checks AD instead (requires RSAT tools).
+	Queries a system's operating system version using both WMI (if it's online) and AD. Requires RSAT tools.
 	
 	.DESCRIPTION
-	Uses WMI to query an online computer's operating system info. If the system is offline, checks AD instead (requires RSAT tools).
+	Queries a system's operating system version using both WMI (if it's online) and AD. Requires RSAT tools.
 	
 	.NOTES
 	Computer must be on the Hopkins network.
@@ -14,13 +14,29 @@
 #>
 
 $comp = Read-Host "Enter Computer Name"
+
+Write-Host "Getting computer info from AD..."
+$adComp = Get-ADComputer $comp -Properties OperatingSystemVersion
+
+$wmiOS = $null
+$lastBootUp = $null
 Write-Host "Checking if [$comp] is online, please wait..."
-# Check if computer is online (try up to three times).
 If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet)) {
 	Write-Host "[$comp] appears to be online, querying WMI..."
-	Get-WmiObject -Class Win32_OperatingSystem -ComputerName $comp | Select PSComputerName, Caption, OSArchitecture, Version, BuildNumber
+	$wmiOS = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $comp
+	if ($wmiOS) {
+		$lastBootUp = [Management.ManagementDateTimeConverter]::ToDateTime($wmiOS.LastBootUpTime)
+	}
 } else {
-	Write-Warning "[$comp] did not respond to any ping attempts, querying AD instead"
-	Get-ADComputer $comp -Properties OperatingSystemVersion
+	Write-Warning "[$comp] did not respond to any ping attempts"
 }
+$o = [PSCustomObject]@{
+	"AD Name"=$adComp.Name
+	"AD Enabled"=$adComp.Enabled
+	"AD OS Version"=$adComp.OperatingSystemVersion
+	"WMI OS Version*"=$wmiOS.Version
+	"WMI Last Restart"=$lastBootUp
+}
+$o
+Write-Host "* WMI OS Version will be most current. Only accessible if the system is online."
 Read-Host "Press enter to exit" | Out-Null
