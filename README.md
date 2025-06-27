@@ -117,6 +117,11 @@ Remotely enables Remote Desktop for the target computer using WMI.
 </details>
 
 <details>
+<summary>Get-RemoteOperatingSystem.ps1</summary>
+Queries a system's operating system version using both WMI (if it's online) and AD. Requires RSAT tools.
+</details>
+
+<details>
 <summary>Enable-RemoteWifiAdapter.ps1</summary>
 Uses WMI to remotely enable any disabled WiFi adapters for a system online with ethernet.
 </details>
