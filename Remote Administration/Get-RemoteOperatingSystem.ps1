@@ -19,6 +19,7 @@ Write-Host "Getting computer info from AD..."
 $adComp = Get-ADComputer $comp -Properties OperatingSystemVersion
 
 $wmiOS = $null
+$wmiDisk = $null
 $lastBootUp = $null
 Write-Host "Checking if [$comp] is online, please wait..."
 If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet)) {
@@ -27,16 +28,27 @@ If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -C
 	if ($wmiOS) {
 		$lastBootUp = [Management.ManagementDateTimeConverter]::ToDateTime($wmiOS.LastBootUpTime)
 	}
+	$wmiDisk = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $comp | where {$_.DriveType -eq 3 -and $_.DeviceID -eq "C:"} | Select @{N="Size"; Expression={[Math]::Round($_.Size /1GB, 2)}}, @{N="FreeSpace"; Expression={[Math]::Round($_.FreeSpace /1GB, 2)}}
 } else {
 	Write-Warning "[$comp] did not respond to any ping attempts"
 }
-$o = [PSCustomObject]@{
+$o = [ordered]@{
 	"AD Name"=$adComp.Name
 	"AD Enabled"=$adComp.Enabled
 	"AD OS Version"=$adComp.OperatingSystemVersion
-	"WMI OS Version*"=$wmiOS.Version
-	"WMI Last Restart"=$lastBootUp
 }
-$o
+if ($wmiOS) {
+	$o["WMI OS Version*"]=$wmiOS.Version
+	$o["WMI Last Restart"]=$lastBootUp
+} else {
+	$o["WMI OS Version*"]="<Unable to query WMI>"
+	$o["WMI Last Restart"]="<Unable to query WMI>"
+}
+if ($wmiDisk) {
+	$o["WMI Free Space"]="$($wmiDisk.FreeSpace)GB free ($($wmiDisk.Size)GB total)"
+} else {
+	$o["WMI Free Space"]="<Unable to query WMI>"
+}
+[PSCustomObject]$o
 Write-Host "* WMI OS Version will be most current. Only accessible if the system is online."
 Read-Host "Press enter to exit" | Out-Null
