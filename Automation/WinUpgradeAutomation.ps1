@@ -32,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	06-30-25 - mcarras8 - Added optional retries for failed emails (default: 2). Tweaked email sleeping
 	06-23-25 - mcarras8 - Switched back to 23H2. Other tweaks. Ready for prod.
 	03-26-25 - mcarras8 - Fixed Group management. Added Department to output and -Verbose support. Other fixes/tweaks.
 	03-14-25 - mcarras8 - Initial upload.
@@ -160,11 +161,14 @@ $EMAIL_USERS_WITH_ONLY_DESKTOPS_AIOS = $false
 # If set, show more detailed notes (default: false).
 $EMAIL_DETAILED_NOTES = $false
 # Amount of time in seconds to sleep between emails.
-$EMAIL_SLEEP_SECS = 8
+$EMAIL_SLEEP_SECS = 10
 # Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
 # The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
-$EMAIL_SLEEP_EXTRA_MOD=10
-$EMAIL_SLEEP_EXTRA_SECS = 30
+$EMAIL_SLEEP_EXTRA_MOD=12
+$EMAIL_SLEEP_EXTRA_SECS = 60
+# Attempt to send the email again on failure after waiting $EMAIL_SLEEP_EXTRA_SECS.
+# Set to 0 to disable.
+$EMAIL_RETRY_LIMIT = 2
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
@@ -686,6 +690,7 @@ Write-Host("[{0}] Exported report of {1} skipped systems to [{2}]." -f (Get-Date
 
 # Loop over each user and compose an email (unless -DryRun is given).
 $success_email_count = 0
+$failed_email_count = 0
 $emailed_users = $null
 if ($ManageGroupOnly) {
 	Write-Host("[{0}] Skipping emails due to -ManageGroupOnly switch." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
@@ -873,22 +878,36 @@ if ($ManageGroupOnly) {
 				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
 					$emailParams["BCC"] = $EMAIL_BCC
 				}
-				$sleep_secs = $EMAIL_SLEEP_SECS
-				try {
-					Send-MailMessage @emailParams -BodyAsHtml
-					$email_success = $true
-					$success_email_count++
-					
-					if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+				$email_retry_count=0
+				while($email_retry_count -le $EMAIL_RETRY_LIMIT -And -Not $email_success) {
+					$sleep_secs = $EMAIL_SLEEP_SECS
+					try {
+						Send-MailMessage @emailParams -BodyAsHtml
+						$email_success = $true
+						$success_email_count++
+						
+						if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+							$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						}
+					} catch {
+						Write-Error $_
+						$error_count++
 						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						if ($EMAIL_RETRY_LIMIT) {
+							Write-Host("[{0}] ERROR: Failed to send to [{1}]. Total sent so far: {2}. Retry count {3} of {4}. " -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count, $email_retry_count, $EMAIL_RETRY_LIMIT)
+						} else {
+							Write-Host("[{0}] ERROR: Failed to send to [{1}]. Total sent so far: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count)
+						}
+						
+						$email_retry_count++
+						# Only increment the failed count if we've reached the limit without any successfully sent emails
+						if ($email_retry_count -gt $EMAIL_RETRY_LIMIT) {
+							$failed_email_count++
+						}
 					}
-				} catch {
-					Write-Error $_
-					$error_count++
-					$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+					# Wait until sending out the next email.
+					Start-Sleep -Seconds $sleep_secs
 				}
-				# Wait until sending out the next email.
-				Start-Sleep -Seconds $sleep_secs
 			}
 		}
 		
@@ -912,7 +931,7 @@ if ($ManageGroupOnly) {
 	if ($DryRun) {
 		Write-Host("[{0}] Would have emailed {1} users (-DryRun enabled). See saved report [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($emailed_users | Measure).Count, $EXPORT_EMAILED_SYSTEMS_PATH)
 	} else {
-		Write-Host("[{0}] Emailed {1} out of {2} users. Saved report to [{3}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, ($emailed_users | Measure).Count, $EXPORT_EMAILED_SYSTEMS_PATH)
+		Write-Host("[{0}] Emailed {1} out of {2} users (with {3} failed emails). Saved report to [{4}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, ($emailed_users | Measure).Count, $failed_email_count, $EXPORT_EMAILED_SYSTEMS_PATH)
 	}
 }
 
@@ -968,7 +987,7 @@ if ($DryRun) {
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. Failed to contact $failed_email_count users. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
 
 <p><b>Skipped processing [{2}] systems (no valid contact, ineligible, or otherwise excluded). Please check [$EXPORT_SKIPPED_SYSTEMS_PATH] and email / update manually as needed.</b></p>
 
@@ -978,7 +997,7 @@ if ($DryRun) {
 	Send-MailMessage @emailParams -BodyAsHtml
 }
 
-Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $errorCount)
+Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $error_count)
 	
 $runtimeDiff = ((Get-Date) - $dateStart)
 Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
