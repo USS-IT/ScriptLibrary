@@ -32,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	07-03-25 - mcarras8 - Added shared contact mapping support
 	06-30-25 - mcarras8 - Added optional retries for failed emails (default: 2). Tweaked email sleeping
 	06-23-25 - mcarras8 - Switched back to 23H2. Other tweaks. Ready for prod.
 	03-26-25 - mcarras8 - Fixed Group management. Added Department to output and -Verbose support. Other fixes/tweaks.
@@ -93,6 +94,12 @@ $CONTACTUSER_EXCLUDE_ITGROUPS = @("USS-IT-JHEDs")
 $CONTACTUSER_EXCLUDE = @("local_users")
 # Exclude contact users matching patterns.
 $CONTACTUSER_EXCLUDE_REGEX = "SC\-"
+# Fallback for shared systems and systems missing contact info. Matches on DistinguishedName.
+# Header: Pattern,Username
+# To match a name, start with "CN=". To match on an OU, use ",OU=<ou>,"
+# The script will check if the username still exists in AD.
+$CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
+
 # User domain if not set. This is the domain appended for all AD lookups and emails (if needed).
 # Some attributes like LastLogonUser and PrimaryUsers won't have domain.
 $USER_DOMAIN = "@jh.edu"
@@ -177,7 +184,7 @@ $EMAIL_REPORT_TO = @("USS-IT-JHEDs")
 $EMAIL_REPORT_SUBJECT = "Weekly Results from Windows 11 Upgrade Campaign"
 
 # Path to systems which report being ineligible for upgrade.
-$IMPORT_INELIGIBLE_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_incompatible_systems_3_14_25.csv"
+$IMPORT_INELIGIBLE_SYSTEMS_FP = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_incompatible_systems_3_14_25.csv"
 # Whether to skip emailing/notifying ineligible systems (and include them in skip report).
 $SKIP_INELIGIBLE_SYSTEMS = $true
 
@@ -484,7 +491,6 @@ if (($CONTACTUSER_EXCLUDE_ITGROUPS | Measure).Count -gt 0) {
 $itUsersCount = ($itUsers | Measure).Count
 
 # Get included contact users.
-# These should be DN only.
 $adUserWhitelist = $null
 $adUserWhitelistCount = 0
 if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
@@ -493,11 +499,21 @@ if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
 	$adUserWhitelistCount = ($aduserWhitelist | Measure).Count
 }
 
+# Get a list of contact fallback mappings.
+$contactFallbackMappings = $null
+if (-Not [string]::IsNullOrEmpty($CONTACTUSER_MAPPING_FALLBACK_FP)) {
+	if (-Not (Test-Path $CONTACTUSER_MAPPING_FALLBACK_FP -PathType Leaf)) {
+		Write-Warning "Contact Fallback Mapping file [$CONTACTUSER_MAPPING_FALLBACK_FP] not found"
+	} else {
+		$contactFallbackMappings = Import-CSV $CONTACTUSER_MAPPING_FALLBACK_FP
+	}
+}
+
 # Import a previously exported list of all incompatible systems.
 # We'll check against this and set the IsIncompatible flag if it's listed here.
 $incompatible_systems = $null
-if((Test-Path $IMPORT_INELIGIBLE_SYSTEMS_PATH -PathType Leaf)) {
-	$incompatible_systems = Import-CSV $IMPORT_INELIGIBLE_SYSTEMS_PATH
+if((Test-Path $IMPORT_INELIGIBLE_SYSTEMS_FP -PathType Leaf)) {
+	$incompatible_systems = Import-CSV $IMPORT_INELIGIBLE_SYSTEMS_FP
 }
 
 # Collect all systems for each contact user.
@@ -523,7 +539,10 @@ $processed_systems = foreach($comp in $comps) {
 		try {
 			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
 			Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
-			if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $aduserWhitelist.distinguishedname) {
+			if (-Not $aduser.Enabled) {
+				Write-Warning("[{0}] [{1}] Assigned user [{2}] is disabled in AD" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+				$contactuser = $null
+			} elseif ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $aduserWhitelist.distinguishedname) {
 				Write-Warning("[{0}] [{1}] Contact user [{2}] not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
 				$contactuser = $null
 			}
@@ -543,78 +562,109 @@ $processed_systems = foreach($comp in $comps) {
 				# If the system is assigned to a user who doesn't have a valid username then assume its a shared system.
 				$is_sharedsystem = $true
 			}
-			# Check LastLastLogonUser if invalid AssignedUser
-			# This should always be samaccountname.
-			$contactuser = $comp.($COMP_PROPS.LastLogonUser)
-			$is_contactuser_it = $false
-			if ([string]::IsNullOrWhitespace($contactuser) -Or $contactuser -in $CONTACTUSER_EXCLUDE -Or $contactuser -match $CONTACTUSER_EXCLUDE_REGEX) {
-				$contactuser = $null
-				$aduser = $null
-				Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Empty or in exclusion list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
-			} else {
-				# Double-check user is valid by checking AD.
-				# Basically, if a user is disabled or outside of the default $USER_OU then we assume they're not a valid "User".
-				# Also check the user's company to see if they match our supported companies.
-				# Finally, check if the user is a member of IT.
-				try {
-					$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
-					Write-Verbose("[{0}] [{1}] Got back AD user info for LastLogonUser: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Company, $aduser.Enabled)
-					if (-Not $aduser.Enabled -Or $aduser.distinguishedname -ne "CN=$contactuser,$USER_OU") {
-						Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
-						$contactuser = $null
-						$aduser = $null
-					} elseif (-Not [string]::IsNullOrWhitespace($aduser.Company) -And ($CONTACTUSER_COMPANIES | Measure).Count -gt 0 -And $aduser.Company -notin $CONTACTUSER_COMPANIES) {
-						Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $aduser.Company)
-						$contactuser = $null
-					} else {
-						if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $adUserWhitelist.distinguishedname) {
-							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
-							$contactuser = $null
-						} elseif ($aduser.distinguishedname -ne $null) {
-							$is_contactuser_it = $aduser.distinguishedname -in $itUsers.distinguishedname
+			
+			# Check the fallback mappings.
+			# This is mostly for shared systems.
+			if($contactFallbackMappings) {
+				foreach($m in $contactFallbackMappings) {
+					if(-Not [string]::IsNullOrWhitespace($m.Pattern) -And $comp.distinguishedname -match $m.Pattern) {
+						$fallbackContact = $m.Username
+						if ([string]::IsNullOrWhitespace($m.Username)) {
+							Write-Error("[{0}] [{1}] - Matched fallback contact pattern [{2}] but Username column is blank" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $m.Pattern)
+							$error_count++
+						} else {
+							Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $fallbackContact)
+							
+							$aduser = Get-ADUserCached -User $fallbackContact -Domain $USER_DOMAIN
+							Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
+							if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
+								Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+								$contactuser = $null
+							} else {
+								# Save this contact.
+								$contactuser = $fallbackContact
+							}
 						}
+						break
 					}
-				} catch {
-					Write-Error $_
-					$error_count++
 				}
 			}
-			# Check primary users if we don't have a valid contact from LastLogonUser
-			# Exclude users not matching criteria, including those not matching a valid company
-			# If the Primary User is a member of IT the logic will fall back to use the LastLogonUser regardless
-			if ([string]::IsNullOrWhitespace($contactuser) -Or $is_contactuser_it) {
-				# PrimaryUsers field is delimited by "; "
+			
+			# Only continue if we didn't find a valid fallback mapping.
+			if ([string]::IsNullOrEmpty($contactuser)) {
+				# Check LastLastLogonUser if invalid AssignedUser
 				# This should always be samaccountname.
-				foreach ($u in ($comp.($COMP_PROPS.PrimaryUsers) -split "; ")) {
-					# Remove the domain from each user
-					$user = $u -replace "[^\\]+\\",""
-					Write-Verbose("[{0}] [{1}] Checking primary user [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
-					if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
-						try {
-							$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN
-							Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
-							# Exclude IT Users, if set.
-							if ($itUsersCount -le 0 -Or $aduserTemp.distinguishedname -notin $itUsers.distinguishedname) {
-								if ($aduserTemp.Enabled -And $aduserTemp.distinguishedname -eq "CN=$user,$USER_OU") {
-									# Check user whitelist, if set.
-									if ($adUserWhitelistCount -gt 0 -And $aduserTemp.distinguishedname -notin $adUserWhitelist.distinguishedname) {
-										Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not found in user groups whitelist" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $user)
-									# Check company, if set.
-									} elseif (($CONTACTUSER_COMPANIES | Measure).Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
-										# If everything else is valid save this user.
-										$contactuser = $user
-										$aduser = $aduserTemp
-										break
-									} else {
-										Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user, $aduserTemp.Company)
-									}
-								} else {
-									Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
-								}
+				$contactuser = $comp.($COMP_PROPS.LastLogonUser)
+				$is_contactuser_it = $false
+				if ([string]::IsNullOrWhitespace($contactuser) -Or $contactuser -in $CONTACTUSER_EXCLUDE -Or $contactuser -match $CONTACTUSER_EXCLUDE_REGEX) {
+					$contactuser = $null
+					$aduser = $null
+					Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Empty or in exclusion list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+				} else {
+					# Double-check user is valid by checking AD.
+					# Basically, if a user is disabled or outside of the default $USER_OU then we assume they're not a valid "User".
+					# Also check the user's company to see if they match our supported companies.
+					# Finally, check if the user is a member of IT.
+					try {
+						$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
+						Write-Verbose("[{0}] [{1}] Got back AD user info for LastLogonUser: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Company, $aduser.Enabled)
+						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
+							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+							$contactuser = $null
+							$aduser = $null
+						} elseif (-Not [string]::IsNullOrWhitespace($aduser.Company) -And ($CONTACTUSER_COMPANIES | Measure).Count -gt 0 -And $aduser.Company -notin $CONTACTUSER_COMPANIES) {
+							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $aduser.Company)
+							$contactuser = $null
+						} else {
+							if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $adUserWhitelist.distinguishedname) {
+								Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+								$contactuser = $null
+							} elseif ($aduser.distinguishedname -ne $null) {
+								$is_contactuser_it = $aduser.distinguishedname -in $itUsers.distinguishedname
 							}
-						} catch {
-							Write-Error $_
-							$error_count++
+						}
+					} catch {
+						Write-Error $_
+						$error_count++
+					}
+				}
+				# Check primary users if we don't have a valid contact from LastLogonUser
+				# Exclude users not matching criteria, including those not matching a valid company
+				# If the Primary User is a member of IT the logic will fall back to use the LastLogonUser regardless
+				if ([string]::IsNullOrWhitespace($contactuser) -Or $is_contactuser_it) {
+					# PrimaryUsers field is delimited by "; "
+					# This should always be samaccountname.
+					foreach ($u in ($comp.($COMP_PROPS.PrimaryUsers) -split "; ")) {
+						# Remove the domain from each user
+						$user = $u -replace "[^\\]+\\",""
+						Write-Verbose("[{0}] [{1}] Checking primary user [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
+						if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
+							try {
+								$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN
+								Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
+								# Exclude IT Users, if set.
+								if ($itUsersCount -le 0 -Or $aduserTemp.distinguishedname -notin $itUsers.distinguishedname) {
+									if ($aduserTemp.Enabled -And $aduserTemp.distinguishedname -like "CN=*,$USER_OU") {
+										# Check user whitelist, if set.
+										if ($adUserWhitelistCount -gt 0 -And $aduserTemp.distinguishedname -notin $adUserWhitelist.distinguishedname) {
+											Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not found in user groups whitelist" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $user)
+										# Check company, if set.
+										} elseif (($CONTACTUSER_COMPANIES | Measure).Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
+											# If everything else is valid save this user.
+											$contactuser = $user
+											$aduser = $aduserTemp
+											break
+										} else {
+											Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user, $aduserTemp.Company)
+										}
+									} else {
+										Write-Verbose("[{0}] [{1}] Discarding primary user [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
+									}
+								}
+							} catch {
+								Write-Error $_
+								$error_count++
+							}
 						}
 					}
 				}
