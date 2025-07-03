@@ -23,6 +23,7 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	07-03-25 - mcarras8 - Added shared contact mapping support
 	04-10-25 - mcarras8 - Revamped script
 #>
 param(
@@ -70,6 +71,12 @@ $Comp_Group_EXCLUDE_Delete = $true
 $ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
 # If set, still email assigned users of excluded systems.
 $EMAIL_EXCLUDED_SYSTEMS = $true
+
+# Fallback for shared systems and systems missing contact info. Matches on DistinguishedName.
+# Header: Pattern,Username
+# To match a name, start with "CN=". To match on an OU, use ",OU=<ou>,"
+# The script will check if the username still exists in AD.
+$CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
 
 # Location and filename for storing CSV results
 $CSV_RESULTS_PATH = "\\win.ad.jhu.edu\cloud\HSA$\ITServices\Reports\StalePCs"
@@ -368,6 +375,16 @@ if ($DryRun) {
 	Write-Host("[{0}] -DryRun set. Only output results to file/console. Using -WhatIf or otherwise skipping actions." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
 }
 
+# Get a list of contact fallback mappings.
+$contactFallbackMappings = $null
+if (-Not [string]::IsNullOrEmpty($CONTACTUSER_MAPPING_FALLBACK_FP)) {
+	if (-Not (Test-Path $CONTACTUSER_MAPPING_FALLBACK_FP -PathType Leaf)) {
+		Write-Warning "Contact Fallback Mapping file [$CONTACTUSER_MAPPING_FALLBACK_FP] not found"
+	} else {
+		$contactFallbackMappings = Import-CSV $CONTACTUSER_MAPPING_FALLBACK_FP
+	}
+}
+
 # Scan Computers OU (SearchBase) for systems that have not been logged in since $warningDays.
 # First ping the computers up to 3 times. If any pass, skip all other checks.
 # Computers with LastLogonDate older than $DATE_RETIREMENT will be moved to the Retired OU if they haven't already.
@@ -463,8 +480,33 @@ $comps | ForEach-Object {
 					Write-Error $_
 					$error_count++
 				}
+			} elseif (-Not [string]::IsNullOrEmpty($assignedUser)) {
+				# Check the fallback mappings for shared systems.
+				# This is mostly for shared systems.
+				if($contactFallbackMappings) {
+					foreach($m in $contactFallbackMappings) {
+						if(-Not [string]::IsNullOrWhitespace($m.Pattern) -And $comp.distinguishedname -match $m.Pattern) {
+							$fallbackContact = $m.Username
+							if ([string]::IsNullOrWhitespace($m.Username)) {
+								Write-Error("[{0}] [{1}] - Matched fallback contact pattern [{2}] but Username column is blank" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $m.Pattern)
+								$error_count++
+							} else {
+								Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $fallbackContact)
+								
+								$u = Get-ADUserCached -User $fallbackContact -Properties "mail"
+								if (-Not $u.Enabled -Or $u.distinguishedname -notlike "CN=*,$OU_USER") {
+									Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $_.Name, $fallbackContact)
+								} elseif (-Not [string]::IsNullOrWhitespace($u.mail)) {
+									$contactEmail = $u.mail
+								}
+							}
+							break
+						}
+					}
+				}
 			}
 		}
+		
 		# Check if system is in an excluded OU.
 		# Using -match in this way should allow matching sub-OUs.
 		If (-Not [string]::IsNullOrEmpty($ou) -And ($OU_EXCLUDE.Where({$ou -match $_}) | Measure-Object).Count -gt 0) {
