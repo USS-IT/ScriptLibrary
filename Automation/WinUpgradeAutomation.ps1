@@ -32,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	07-07-25 - mcarras8 - Contact users will no longer get domain appended automatically. And only email contact users for active unassigned/shared systems by default
 	07-03-25 - mcarras8 - Added shared contact mapping support
 	06-30-25 - mcarras8 - Added optional retries for failed emails (default: 2). Tweaked email sleeping
 	06-23-25 - mcarras8 - Switched back to 23H2. Other tweaks. Ready for prod.
@@ -107,12 +108,14 @@ $USER_DOMAIN = "@jh.edu"
 $USER_OU = "OU=PEOPLE,DC=win,DC=ad,DC=jhu,DC=edu"
 # If set, only display asset tag if its numeric.
 $ASSET_TAG_IS_NUMERIC=$true
-# Only send email notifications when the system has a valid assigned user.
-$CONTACT_ONLY_WHEN_ASSIGNED = $false
+# Only send email notifications when the system has a valid assigned user or has been recently active.
+$CONTACT_ONLY_WHEN_ASSIGNED_OR_ACTIVE = $true
 # Group for Toast Notification GPO
 $NOTIFICATION_GROUP = "USS-GPO-Win11UpgradeToast"
 # Add a warning if LastLogonDate is X number of days ago.
 $STALE_PC_DAYS = 30
+# Consider system as "inactive" if less than X number of days since LastLogonDate.
+$INACTIVE_PC_DAYS = 7
 # The System-Of-Record URL to display in the exports, appending the asset tag #.
 $SORURL_ASSETTAG = "https://jh-uss.snipe-it.io/hardware/bytag?assetTag="
 
@@ -525,6 +528,7 @@ $processed_systems = foreach($comp in $comps) {
 	$is_sharedsystem = $false
 	$is_assigned = $true
 	$is_incompatible = ($comp.Name -in $incompatible_systems.Name)
+	$has_fallback_mapping = $false
 	$lastlogondate = $comp.($COMP_PROPS.LastLogonDate)
 	if ($lastlogondate -and ((Get-Date) - $lastlogondate).Days -gt $STALE_PC_DAYS) {
 		$is_stale = $true
@@ -537,7 +541,7 @@ $processed_systems = foreach($comp in $comps) {
 	Write-Verbose("[{0}] [{1}] Initial contact user: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 	if ($contactuser -match "@") {
 		try {
-			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
+			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
 			Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
 			if (-Not $aduser.Enabled) {
 				Write-Warning("[{0}] [{1}] Assigned user [{2}] is disabled in AD" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
@@ -551,76 +555,82 @@ $processed_systems = foreach($comp in $comps) {
 			$error_count++
 		}
 	} else {
-		if ([string]::IsNullOrEmpty($contactuser) -And $CONTACT_ONLY_WHEN_ASSIGNED) {
-			$skip_reason = "No Assigned User"
-			Write-Warning("[{0}] [{1}] - SKIPPING: No assigned user and CONTACT_ONLY_WHEN_ASSIGNED is set." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		if ([string]::IsNullOrEmpty($contactuser)) {
+			Write-Host("[{0}] [{1}] - No valid assigned user [{2}]. Checking other attributes. System Is Stale: {3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $is_stale)
+			$is_assigned = $false
 		} else {
-			if ([string]::IsNullOrEmpty($contactuser)) {
-				Write-Host("[{0}] [{1}] - No valid assigned user [{2}]. Checking other attributes. System Is Stale: {3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $is_stale)
-				$is_assigned = $false
-			} else {
-				# If the system is assigned to a user who doesn't have a valid username then assume its a shared system.
-				$is_sharedsystem = $true
-			}
-			
-			# Check the fallback mappings.
-			# This is mostly for shared systems.
-			if($contactFallbackMappings) {
-				foreach($m in $contactFallbackMappings) {
-					if(-Not [string]::IsNullOrWhitespace($m.Pattern) -And $comp.distinguishedname -match $m.Pattern) {
-						$fallbackContact = $m.Username
-						if ([string]::IsNullOrWhitespace($m.Username)) {
-							Write-Error("[{0}] [{1}] - Matched fallback contact pattern [{2}] but Username column is blank" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $m.Pattern)
-							$error_count++
+			# If the system is assigned to a user who doesn't have a valid username then assume its a shared system.
+			$is_sharedsystem = $true
+		}
+		
+		# Check the fallback mappings.
+		# This is mostly for shared systems.
+		if($contactFallbackMappings) {
+			foreach($m in $contactFallbackMappings) {
+				if(-Not [string]::IsNullOrWhitespace($m.Pattern) -And $comp.distinguishedname -match $m.Pattern) {
+					$fallbackContact = $m.Username
+					if ([string]::IsNullOrWhitespace($m.Username)) {
+						Write-Error("[{0}] [{1}] - Matched fallback contact pattern [{2}] but Username column is blank" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $m.Pattern)
+						$error_count++
+					} else {
+						Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $fallbackContact)
+						
+						$aduser = Get-ADUserCached -User $fallbackContact -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
+						Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
+						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
+							Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+							$contactuser = $null
 						} else {
-							Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $fallbackContact)
-							
-							$aduser = Get-ADUserCached -User $fallbackContact -Domain $USER_DOMAIN
-							Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
-							if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
-								Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
-								$contactuser = $null
-							} else {
-								# Save this contact.
-								$contactuser = $fallbackContact
-							}
+							# Save this contact.
+							$contactuser = $aduser.UserPrincipalName
 						}
-						break
 					}
+					break
 				}
 			}
-			
-			# Only continue if we didn't find a valid fallback mapping.
-			if ([string]::IsNullOrEmpty($contactuser)) {
+		}
+		
+		# Only continue if we didn't find a valid fallback mapping.
+		if ([string]::IsNullOrEmpty($contactuser)) {
+			if ($CONTACT_ONLY_WHEN_ASSIGNED_OR_ACTIVE -And ($lastlogondate -and ((Get-Date) - $lastlogondate).Days -gt $INACTIVE_PC_DAYS)) {
+				$skip_reason = "No Assigned User / Inactive"
+				Write-Warning("[{0}] [{1}] - SKIPPING: No assigned user, LastLogonDate {2}, and CONTACT_ONLY_WHEN_ASSIGNED_OR_ACTIVE is set." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $lastlogondate)
+			} else {
 				# Check LastLastLogonUser if invalid AssignedUser
 				# This should always be samaccountname.
-				$contactuser = $comp.($COMP_PROPS.LastLogonUser)
+				$u = $comp.($COMP_PROPS.LastLogonUser)
 				$is_contactuser_it = $false
-				if ([string]::IsNullOrWhitespace($contactuser) -Or $contactuser -in $CONTACTUSER_EXCLUDE -Or $contactuser -match $CONTACTUSER_EXCLUDE_REGEX) {
+				if ([string]::IsNullOrWhitespace($u) -Or $u -in $CONTACTUSER_EXCLUDE -Or $u -match $CONTACTUSER_EXCLUDE_REGEX) {
 					$contactuser = $null
 					$aduser = $null
-					Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Empty or in exclusion list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+					Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Empty or in exclusion list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u)
 				} else {
 					# Double-check user is valid by checking AD.
 					# Basically, if a user is disabled or outside of the default $USER_OU then we assume they're not a valid "User".
 					# Also check the user's company to see if they match our supported companies.
 					# Finally, check if the user is a member of IT.
 					try {
-						$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN
+						$aduser = Get-ADUserCached -User $u -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
 						Write-Verbose("[{0}] [{1}] Got back AD user info for LastLogonUser: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Company, $aduser.Enabled)
 						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
-							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u)
 							$contactuser = $null
 							$aduser = $null
 						} elseif (-Not [string]::IsNullOrWhitespace($aduser.Company) -And ($CONTACTUSER_COMPANIES | Measure).Count -gt 0 -And $aduser.Company -notin $CONTACTUSER_COMPANIES) {
-							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $aduser.Company)
+							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Invalid company [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u, $aduser.Company)
 							$contactuser = $null
+							$aduser = $null
 						} else {
 							if ($adUserWhitelistCount -gt 0 -And $aduser.distinguishedname -notin $adUserWhitelist.distinguishedname) {
-								Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
+								Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not found in user groups" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $u)
 								$contactuser = $null
-							} elseif ($aduser.distinguishedname -ne $null) {
-								$is_contactuser_it = $aduser.distinguishedname -in $itUsers.distinguishedname
+								$aduser = $null
+							} else {
+								# Save the contact user from LastLogonUser.
+								$contactuser = $aduser.UserPrincipalName
+								if ($aduser.distinguishedname -ne $null) {
+									$is_contactuser_it = $aduser.distinguishedname -in $itUsers.distinguishedname
+								}
 							}
 						}
 					} catch {
@@ -640,7 +650,7 @@ $processed_systems = foreach($comp in $comps) {
 						Write-Verbose("[{0}] [{1}] Checking primary user [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
 						if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
 							try {
-								$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN
+								$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
 								Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
 								# Exclude IT Users, if set.
 								if ($itUsersCount -le 0 -Or $aduserTemp.distinguishedname -notin $itUsers.distinguishedname) {
@@ -651,7 +661,7 @@ $processed_systems = foreach($comp in $comps) {
 										# Check company, if set.
 										} elseif (($CONTACTUSER_COMPANIES | Measure).Count -eq 0 -Or [string]::IsNullOrWhitespace($aduserTemp.Company) -Or $aduserTemp.Company -in $CONTACTUSER_COMPANIES) {
 											# If everything else is valid save this user.
-											$contactuser = $user
+											$contactuser = $aduserTemp.UserPrincipalName
 											$aduser = $aduserTemp
 											break
 										} else {
@@ -671,6 +681,7 @@ $processed_systems = foreach($comp in $comps) {
 			}
 		}
 	}
+	
 	# Only continue if we have a valid contact user
 	if ([string]::IsNullOrWhitespace($contactuser)) {
 		$skip_reason = "No Valid Contact User"
@@ -705,7 +716,7 @@ $processed_systems = foreach($comp in $comps) {
 		)
 	} else {
 		# Add the system to our list.
-		Write-Verbose("[{0}] [{1}] Contact User is valid" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		Write-Verbose("[{0}] [{1}] Contact User is valid: [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 		$contactuser = $contactuser.ToLower()
 		if ($contactuser -notmatch "@") {
 			$contactuser = $contactuser + $USER_DOMAIN
@@ -806,6 +817,9 @@ if ($ManageGroupOnly) {
 				} else {
 					$msgSystem = (", {0}," -f $systeminfo.Name)
 				}
+				if ($has_shared_system) {
+					$msgSystem += "*"
+				}
 			}
 		}
 		
@@ -851,6 +865,11 @@ if ($ManageGroupOnly) {
 			# -- BODY - NOTES --
 			# Set $EMAIL_DETAILED_NOTES to display more detailed notes.
 			if (-Not $EMAIL_DETAILED_NOTES) {
+				if ($has_shared_system -And -Not [string]::IsNullOrEmpty($msgSystem)) {
+					$msgHtml += @"
+			<p>* This may be a shared system.</p>
+"@
+				}
 				if ($desktop_count -gt 0 -And ($desktop_count -lt $o.Count -Or [string]::IsNullOrWhitespace($EMAIL_INTRO_HTML_DESKTOPS))) {
 					$msgHtml += @"
 			<p>* Desktops and all-in-ones will be upgraded automatically pending next restart.</p>
@@ -932,6 +951,7 @@ if ($ManageGroupOnly) {
 				while($email_retry_count -le $EMAIL_RETRY_LIMIT -And -Not $email_success) {
 					$sleep_secs = $EMAIL_SLEEP_SECS
 					try {
+						Write-Host("[{0}] Sending email to [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
 						Send-MailMessage @emailParams -BodyAsHtml
 						$email_success = $true
 						$success_email_count++
@@ -984,6 +1004,8 @@ if ($ManageGroupOnly) {
 		Write-Host("[{0}] Emailed {1} out of {2} users (with {3} failed emails). Saved report to [{4}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, ($emailed_users | Measure).Count, $failed_email_count, $EXPORT_EMAILED_SYSTEMS_PATH)
 	}
 }
+# Add only failed emails to error count.
+$error_count += $failed_email_count
 
 # Next, we'll also remove all users from the notification GPO and re-add only the ones we're sending emails to.
 # Make sure to exclude all the blacklisted users as well.
