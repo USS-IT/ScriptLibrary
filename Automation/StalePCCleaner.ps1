@@ -23,6 +23,7 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	07-09-25 - mcarrasu - Added support for marking VIP users in reports
 	07-03-25 - mcarras8 - Added shared contact mapping support
 	04-10-25 - mcarras8 - Revamped script
 #>
@@ -71,6 +72,8 @@ $Comp_Group_EXCLUDE_Delete = $true
 $ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
 # If set, still email assigned users of excluded systems.
 $EMAIL_EXCLUDED_SYSTEMS = $true
+# Users in the these groups will be marked as "VIP" in reports.
+$VIP_USER_GROUPS = @("USS-VIP")
 
 # Fallback for shared systems and systems missing contact info. Matches on DistinguishedName.
 # Header: Pattern,Username
@@ -81,7 +84,7 @@ $CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
 # Location and filename for storing CSV results
 $CSV_RESULTS_PATH = "\\win.ad.jhu.edu\cloud\HSA$\ITServices\Reports\StalePCs"
 $CSV_RESULTS_FP = "$CSV_RESULTS_PATH\StalePCs-{0}.csv" -f (Get-Date -format 'MM-dd-yyyy')
-$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","FormFactor","AssetTag")
+$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","VIP","FormFactor","AssetTag")
 
 # Automated email settings.
 $EMAIL_ASSIGNEDUSER = $true
@@ -385,6 +388,20 @@ if (-Not [string]::IsNullOrEmpty($CONTACTUSER_MAPPING_FALLBACK_FP)) {
 	}
 }
 
+# Collect VIP users. These will only be used for reports.
+$VIPUsers = $null
+$VIPUsersCount = 0
+if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
+	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
+	try {
+		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -ADProperties "mail" -Nested -Verbose
+		$VIPUsers = ($VIPUsers | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
+}
+
 # Scan Computers OU (SearchBase) for systems that have not been logged in since $warningDays.
 # First ping the computers up to 3 times. If any pass, skip all other checks.
 # Computers with LastLogonDate older than $DATE_RETIREMENT will be moved to the Retired OU if they haven't already.
@@ -591,6 +608,7 @@ $comps | ForEach-Object {
 		$logSystems[$_.Name]["ContactEmail"] = $contactEmail
 		$logSystems[$_.Name]["AssignedUser"] = $assignedUser
 		$logSystems[$_.Name]["Emailed"] = ""
+		$logSystems[$_.Name]["VIP"] = ""
 	}
 
 	# If we have a valid contact email, add to the list of users to email.
@@ -605,15 +623,17 @@ $comps | ForEach-Object {
 }
 
 # Email all the users we collected earlier.
+$success_email_count = 0
+$VIPuser_contact_count = 0
 if (-Not $EMAIL_ASSIGNEDUSER) {
 	Write-Host("[{0}] Would have [{1}] users to email, however `$EMAIL_ASSIGNEDUSER is set to $EMAIL_ASSIGNEDUSER" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
 } else {
 	Write-Host("[{0}] Setting up [{1}] emails" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
-	$success_email_count = 0
 	foreach($ht in $contactUserSystems.GetEnumerator()) {
 		$email = $ht.Name
 		$systems = $ht.Value
 		if ($email -match "@") {
+			$isVIPUser = $false
 			Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
 			$msgHtml = $EMAIL_INTRO_HTML
 			$msgSystemTable = ""
@@ -655,7 +675,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 			
 			# Only send the email if we have at least one valid system.
 			$email_success = $false
-			if ($validSystems) {
+			if ($validSystems) {				
 				$emailUser = $email
 				$emailParams = @{
 					From = $EMAIL_FROM
@@ -693,17 +713,26 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 			}
 			# If we successfully sent an email, make sure to log it.
 			if ($email_success) {
+				# Check if this is an VIP user.
+				$isVIPUser = $VIPUsersCount -gt 0 -And ($email -in $VIPUsers.mail)
+				if ($isVIPUser) {
+					$VIPuser_contact_count++
+				}
 				foreach($systemName in $systems) {
 					$logSystems[$systemName]["Emailed"] = $email
+					if ($VIPUsersCount -gt 0) {
+						$logSystems[$systemName]["VIP"] = $isVIPUser
+					}
 				}
 			}
 		}
 	}
-}
-if ($DryRun) {
-	Write-Host("[{0}] Would have emailed [{1}] users (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
-} else {
-	Write-Host("[{0}] Emailed [{1}] users" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
+	
+	if ($DryRun) {
+		Write-Host("[{0}] Would have emailed [{1}] users (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
+	} else {
+		Write-Host("[{0}] Emailed [{1}] users (including {2} VIPs)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, $VIPuser_contact_count)
+	}
 }
 
 # Log all the systems to the results file, converting the nested hashtable to a PSCustomObject first.
@@ -729,10 +758,10 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [{2}] VIPs). Skipped processing [{3}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
 
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
-"@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
+"@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, $VIPuser_contact_count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
 
 	Write-Host($emailParams.Body)
 	Send-MailMessage @emailParams -BodyAsHtml
