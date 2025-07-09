@@ -32,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	07-09-25 - mcarrasu - Added support for marking VIP users in reports. Also ensured emails will never go out to invalid addresses
 	07-07-25 - mcarras8 - Contact users will no longer get domain appended automatically. And only email contact users for active unassigned/shared systems by default
 	07-03-25 - mcarras8 - Added shared contact mapping support
 	06-30-25 - mcarras8 - Added optional retries for failed emails (default: 2). Tweaked email sleeping
@@ -100,6 +101,8 @@ $CONTACTUSER_EXCLUDE_REGEX = "SC\-"
 # To match a name, start with "CN=". To match on an OU, use ",OU=<ou>,"
 # The script will check if the username still exists in AD.
 $CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
+# Users in the these groups will be marked as "VIP" in reports.
+$VIP_USER_GROUPS = @("USS-VIP")
 
 # User domain if not set. This is the domain appended for all AD lookups and emails (if needed).
 # Some attributes like LastLogonUser and PrimaryUsers won't have domain.
@@ -471,7 +474,7 @@ if(-Not [string]::IsNullOrEmpty($DebugEmailOverride)) {
 
 # Get enabled computers matching $eolver or lower.
 $_props = $COMP_PROPS.Values | % { $_ }
-$comps = Get-ADComputer -Searchbase $searchbase -Filter {Enabled -eq $true} -Properties $_props | where {$_.OperatingSystemVersion -match "10.0 \((\d+)\)" -and $Matches.1 -ne $null -and ($Matches.1 -as [int]) -is [int] -And $Matches.1 -le $eolver -And $_.distinguishedname -notin $EXCLUDE_OUS}
+$comps = Get-ADComputer -Searchbase $searchbase -Filter {Enabled -eq $true} -Properties $_props | where {$_.OperatingSystemVersion -match "10.0 \((\d+)\)" -and $Matches.1 -ne $null -and ($Matches.1 -as [int]) -is [int] -And $Matches.1 -le $eolver -And $_.distinguishedname -notin $EXCLUDE_OUS} -ErrorAction Stop
 
 # Convert the hashtable map into a dynamic select array before exporting.
 $selectarray = @("distinguishedname")
@@ -488,18 +491,29 @@ if (($CONTACTUSER_EXCLUDE_GROUPS | Measure).Count -gt 0) {
 }
 $adUserBlacklistCount = ($adUserBlacklist | Measure).Count
 $itUsers = $null
+$itUsersCount = 0
 if (($CONTACTUSER_EXCLUDE_ITGROUPS | Measure).Count -gt 0) {
-	$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+	try {
+		$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+		$itUsersCount = ($itUsers | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
 }
-$itUsersCount = ($itUsers | Measure).Count
 
 # Get included contact users.
 $adUserWhitelist = $null
 $adUserWhitelistCount = 0
 if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
-	Write-Host("[{0}] Collecting AD group members to include from {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($CONTACTUSER_INCLUDE_GROUPS -join ", "))
-	$aduserWhitelist = Get-ADUsersByGroup $CONTACTUSER_INCLUDE_GROUPS -Nested -Verbose
-	$adUserWhitelistCount = ($aduserWhitelist | Measure).Count
+	try {
+		Write-Host("[{0}] Collecting AD group members to include from {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($CONTACTUSER_INCLUDE_GROUPS -join ", "))
+		$aduserWhitelist = Get-ADUsersByGroup $CONTACTUSER_INCLUDE_GROUPS -Nested -Verbose
+		$adUserWhitelistCount = ($aduserWhitelist | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
 }
 
 # Get a list of contact fallback mappings.
@@ -509,6 +523,20 @@ if (-Not [string]::IsNullOrEmpty($CONTACTUSER_MAPPING_FALLBACK_FP)) {
 		Write-Warning "Contact Fallback Mapping file [$CONTACTUSER_MAPPING_FALLBACK_FP] not found"
 	} else {
 		$contactFallbackMappings = Import-CSV $CONTACTUSER_MAPPING_FALLBACK_FP
+	}
+}
+
+# Collect VIP users. These will only be used for reports.
+$VIPUsers = $null
+$VIPUsersCount = 0
+if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
+	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
+	try {
+		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -Nested -Verbose
+		$VIPUsers = ($VIPUsers | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
 	}
 }
 
@@ -529,6 +557,7 @@ $processed_systems = foreach($comp in $comps) {
 	$is_assigned = $true
 	$is_incompatible = ($comp.Name -in $incompatible_systems.Name)
 	$has_fallback_mapping = $false
+	$is_contactuser_vip = $false
 	$lastlogondate = $comp.($COMP_PROPS.LastLogonDate)
 	if ($lastlogondate -and ((Get-Date) - $lastlogondate).Days -gt $STALE_PC_DAYS) {
 		$is_stale = $true
@@ -683,17 +712,23 @@ $processed_systems = foreach($comp in $comps) {
 	}
 	
 	# Only continue if we have a valid contact user
-	if ([string]::IsNullOrWhitespace($contactuser)) {
+	if ($contactuser -notmatch "@") {
 		$skip_reason = "No Valid Contact User"
-		Write-Warning("[{0}] [{1}] - SKIPPING: No Valid Contact User" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
-	# Check blacklist of users to exclude from processing.
-	} elseif ($adUserBlacklistCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $aduserBlacklist.distinguishedname) {
-		$skip_reason = "Excluded User"
-		Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
-	# Check if we need to skip system due to being ineligible for upgrade.
-	} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
-		$skip_reason = "Incompatible System"
-		Write-Warning("[{0}] [{1}] - SKIPPING: System is in incompatible system list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		Write-Warning("[{0}] [{1}] - SKIPPING: No Valid Contact User [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+	} else {
+		# Check if user is in VIP users groups.
+		if ($aduser.distinguishedname -ne $null) {
+			$is_contactuser_vip = ($VIPUsersCount -gt 0 -And $aduser.distinguishedname -in $VIPUsers.distinguishedname)
+		}
+		# Check blacklist of users to exclude from processing.
+		if ($adUserBlacklistCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $aduserBlacklist.distinguishedname) {
+			$skip_reason = "Excluded User"
+			Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		# Check if we need to skip system due to being ineligible for upgrade.
+		} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
+			$skip_reason = "Incompatible System"
+			Write-Warning("[{0}] [{1}] - SKIPPING: System is in incompatible system list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+		}
 	}
 	
 	# We skipped this system.
@@ -708,19 +743,18 @@ $processed_systems = foreach($comp in $comps) {
 				IsIncompatible=$is_incompatible
 				IsShared=$is_sharedsystem
 				IsAssigned=$is_assigned
+				IsVIPUser=$is_contactuser_vip
 				IsStale=$is_stale
 				OS=$comp.operatingsystemversion
 				SkippedReason=$skip_reason
 				Link=$link_url
 			}
 		)
-	} else {
+	} elseif ($contactuser -match "@") {
 		# Add the system to our list.
 		Write-Verbose("[{0}] [{1}] Contact User is valid: [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 		$contactuser = $contactuser.ToLower()
-		if ($contactuser -notmatch "@") {
-			$contactuser = $contactuser + $USER_DOMAIN
-		}
+
 		# Note: ADUser is not used in any exports.
 		[PSCustomObject]@{
 			Name=$comp.Name
@@ -732,6 +766,7 @@ $processed_systems = foreach($comp in $comps) {
 			IsIncompatible=$is_incompatible
 			IsShared=$is_sharedsystem
 			IsAssigned=$is_assigned
+			IsVIPUser=$is_contactuser_vip
 			IsStale=$is_stale
 			OS=$comp.operatingsystemversion
 			Link=$link_url
@@ -752,6 +787,7 @@ Write-Host("[{0}] Exported report of {1} skipped systems to [{2}]." -f (Get-Date
 # Loop over each user and compose an email (unless -DryRun is given).
 $success_email_count = 0
 $failed_email_count = 0
+$vip_users_email_count = 0
 $emailed_users = $null
 if ($ManageGroupOnly) {
 	Write-Host("[{0}] Skipping emails due to -ManageGroupOnly switch." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
@@ -767,10 +803,14 @@ if ($ManageGroupOnly) {
 		$has_stale_system = $false
 		$has_unassigned_system = $false
 		$has_incompatible_system = $false
+		$is_vip = $false
 		$desktop_count = 0
 		$msgSystemTable = ""
 		$msgSystem = ""
 		foreach($systeminfo in $systems) {
+			if ($systeminfo.IsVIPUser -And -Not $is_vip) {
+				$is_vip = $true
+			}
 			$shared_system = ""
 			if ($systeminfo.IsSharedSystem) {
 				$shared_system = "<b>Yes</b>"
@@ -955,6 +995,9 @@ if ($ManageGroupOnly) {
 						Send-MailMessage @emailParams -BodyAsHtml
 						$email_success = $true
 						$success_email_count++
+						if ($is_vip) {
+							$vip_users_email_count++
+						}
 						
 						if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
 							$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
@@ -986,6 +1029,7 @@ if ($ManageGroupOnly) {
 		[PSCustomObject]@{
 			ContactUser = $user
 			Department = $department
+			VIP = $is_vip
 			SystemCount = ($systems | Measure).Count
 			Systems = ($systems | Select @{N="Name"; Expression={$name = $_.Name; if($_.IsIncompatible) { $name += " (!)" }; $name}}).Name  -join ","
 			SharedSystems = $has_shared_system
@@ -1059,7 +1103,7 @@ if ($DryRun) {
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. Failed to contact $failed_email_count users. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$vip_users_email_count] VIP users). Failed to contact $failed_email_count users. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
 
 <p><b>Skipped processing [{2}] systems (no valid contact, ineligible, or otherwise excluded). Please check [$EXPORT_SKIPPED_SYSTEMS_PATH] and email / update manually as needed.</b></p>
 
