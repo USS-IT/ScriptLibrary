@@ -15,7 +15,7 @@
 	Send an email to the given address instead of the contact user. This overrides -DryRun for emailing.
 	
 	.PARAMETER DebugEmailLimit
-	Limit the number of emails sent (Default: 1).
+	Limit the number of emails sent (Default: 1). Intended for debugging.
 	
 	.PARAMETER Verbose
 	Enable additional verbose/debugging output.
@@ -32,6 +32,8 @@
 	Author: mcarras8
 	
 	Changelog
+	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
+						- Fix for VIP Users
 	07-09-25 - mcarrasu - Added support for marking VIP users in reports. Also ensured emails will never go out to invalid addresses
 	07-07-25 - mcarras8 - Contact users will no longer get domain appended automatically. And only email contact users for active unassigned/shared systems by default
 	07-03-25 - mcarras8 - Added shared contact mapping support
@@ -533,7 +535,7 @@ if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
 	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
 	try {
 		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -Nested -Verbose
-		$VIPUsers = ($VIPUsers | Measure).Count
+		$VIPUsersCount = ($VIPUsers | Measure).Count
 	} catch {
 		Write-Error $_
 		$error_count++
@@ -588,8 +590,10 @@ $processed_systems = foreach($comp in $comps) {
 			Write-Host("[{0}] [{1}] - No valid assigned user [{2}]. Checking other attributes. System Is Stale: {3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $is_stale)
 			$is_assigned = $false
 		} else {
+			Write-Host("[{0}] [{1}] - Invalid assigned user [{2}] (likely shared). Checking other attributes. System Is Stale: {3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser, $is_stale)
 			# If the system is assigned to a user who doesn't have a valid username then assume its a shared system.
 			$is_sharedsystem = $true
+			$contactuser = $null
 		}
 		
 		# Check the fallback mappings.
@@ -711,23 +715,27 @@ $processed_systems = foreach($comp in $comps) {
 		}
 	}
 	
-	# Only continue if we have a valid contact user
-	if ($contactuser -notmatch "@") {
-		$skip_reason = "No Valid Contact User"
-		Write-Warning("[{0}] [{1}] - SKIPPING: No Valid Contact User [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
-	} else {
-		# Check if user is in VIP users groups.
-		if ($aduser.distinguishedname -ne $null) {
-			$is_contactuser_vip = ($VIPUsersCount -gt 0 -And $aduser.distinguishedname -in $VIPUsers.distinguishedname)
-		}
-		# Check blacklist of users to exclude from processing.
-		if ($adUserBlacklistCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $aduserBlacklist.distinguishedname) {
-			$skip_reason = "Excluded User"
-			Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
-		# Check if we need to skip system due to being ineligible for upgrade.
-		} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
-			$skip_reason = "Incompatible System"
-			Write-Warning("[{0}] [{1}] - SKIPPING: System is in incompatible system list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+	# Check if user is in VIP users groups (if we looked them up)
+	if ($aduser.distinguishedname -ne $null) {
+		$is_contactuser_vip = ($VIPUsersCount -gt 0 -And $aduser.distinguishedname -in $VIPUsers.distinguishedname)
+		Write-Verbose("[{0}] [{1]] is in VIP Users groups: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $aduser.distinguishedname, $is_contactuser_vip)
+	}
+			
+	if (-Not [string]::IsNullOrEmpty($skip_reason)) {
+		# Only continue if we have a valid contact user
+		if ($contactuser -notmatch "@") {
+			$skip_reason = "No Valid Contact User"
+			Write-Warning("[{0}] [{1}] - SKIPPING: No Valid Contact User [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
+		} else {
+			# Check blacklist of users to exclude from processing.
+			if ($adUserBlacklistCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $aduserBlacklist.distinguishedname) {
+				$skip_reason = "Excluded User"
+				Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+			# Check if we need to skip system due to being ineligible for upgrade.
+			} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
+				$skip_reason = "Incompatible System"
+				Write-Warning("[{0}] [{1}] - SKIPPING: System is in incompatible system list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
+			}
 		}
 	}
 	
@@ -992,7 +1000,7 @@ if ($ManageGroupOnly) {
 					$sleep_secs = $EMAIL_SLEEP_SECS
 					try {
 						Write-Host("[{0}] Sending email to [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
-						Send-MailMessage @emailParams -BodyAsHtml
+						Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
 						$email_success = $true
 						$success_email_count++
 						if ($is_vip) {
@@ -1072,8 +1080,12 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 					}
 					$users = $users | where {$_ -notin $groupMembers.distinguishedname}
 				}
-				Write-Host("[{0}] Adding {1} members to group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($users | Measure).Count, $NOTIFICATION_GROUP)
-				Add-ADGroupMember $NOTIFICATION_GROUP -Members $users -Confirm:$false -WhatIf:$DryRun
+				if (($users | Measure).Count -le 0) {
+					Write-Host("[{0}] No members to add to group [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $NOTIFICATION_GROUP)
+				} else {
+					Write-Host("[{0}] Adding {1} members to group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($users | Measure).Count, $NOTIFICATION_GROUP)
+					Add-ADGroupMember $NOTIFICATION_GROUP -Members $users -Confirm:$false -WhatIf:$DryRun
+				}
 			}
 		} catch {
 			Write-Error $_

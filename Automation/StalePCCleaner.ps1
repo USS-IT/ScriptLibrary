@@ -23,6 +23,8 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
+						- Fix for VIP Users
 	07-09-25 - mcarrasu - Added support for marking VIP users in reports
 	07-03-25 - mcarras8 - Added shared contact mapping support
 	04-10-25 - mcarras8 - Revamped script
@@ -395,7 +397,7 @@ if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
 	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
 	try {
 		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -ADProperties "mail" -Nested -Verbose
-		$VIPUsers = ($VIPUsers | Measure).Count
+		$VIPUsersCount = ($VIPUsers | Measure).Count
 	} catch {
 		Write-Error $_
 		$error_count++
@@ -695,7 +697,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 				$sleep_secs = $EMAIL_SLEEP_SECS
 				try {
 					if (-Not $DryRun) {
-						Send-MailMessage @emailParams -BodyAsHtml
+						Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
 					}
 					$email_success = $true
 					$success_email_count++
