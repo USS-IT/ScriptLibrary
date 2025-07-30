@@ -167,7 +167,7 @@ if (-Not [string]::IsNullOrWhiteSpace($EMAIL_SMTP)) {
 			To =  $EMAIL_ERROR_REPORT_TO
 			Subject = "Errors from $_scriptName"
 			Body = "There were [$errorCount] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See attached logfile for more details."
-			Priority = "High"
+			#Priority = "High"
 			DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 			SmtpServer = $EMAIL_SMTP
 		}
