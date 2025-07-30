@@ -23,6 +23,7 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	07-21-25 - mcarras8 - Retry failed emails, show model info in email, additional logging
 	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
 						- Fix for VIP Users
 	07-09-25 - mcarrasu - Added support for marking VIP users in reports
@@ -56,6 +57,8 @@ $PROP_ASSIGNMENT = "extensionAttribute2"
 $PROP_FORMFACTOR = "extensionAttribute5"
 # AD attribute for asset tag
 $PROP_ASSETTAG = "extensionAttribute1"
+# AD attribute for model
+$PROP_MODEL = "extensionAttribute7"
 
 # The OU containing all contactable users.
 $OU_USER = "OU=PEOPLE,DC=win,DC=ad,DC=jhu,DC=edu"
@@ -65,7 +68,7 @@ $OU_COMPUTERS = 'OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # OU used to move retired computers to
 $OU_RETIREMENT = 'OU=USS-Retired,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # List of OUs to exclude from processing.
-$OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
+$OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-STARS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
 # Computers in this group will also be excluded.
 $Comp_Group_EXCLUDE = 'USS-StalePCExceptionComps'
 # If true, still delete the systems in $Comp_Group_EXCLUDE after $DATE_REMOVAL has passed.
@@ -103,12 +106,15 @@ $EMAIL_INTRO_HTML = @"
 
 <p>Thank you for your cooperation.</p>
 "@
-# Number of seconds to sleep in-between each email.
+# Amount of time in seconds to sleep between emails.
 $EMAIL_SLEEP_SECS = 10
 # Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
 # The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
 $EMAIL_SLEEP_EXTRA_MOD=10
-$EMAIL_SLEEP_EXTRA_SECS = 30
+$EMAIL_SLEEP_EXTRA_SECS = 60
+# Attempt to send the email again on failure after waiting $EMAIL_SLEEP_EXTRA_SECS.
+# Set to 0 to disable.
+$EMAIL_RETRY_LIMIT = 4
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
@@ -471,6 +477,7 @@ $comps | ForEach-Object {
 		$pingResult = "Success"
 	} Else {
 		$pingResult = "Fail"
+		Write-Host("[{0}] No ping response from {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name)
 		
 		$skipProcessing = $false
 		# Get contact email and check if assigned user is excluded from processing.
@@ -500,6 +507,8 @@ $comps | ForEach-Object {
 					$error_count++
 				}
 			} elseif (-Not [string]::IsNullOrEmpty($assignedUser)) {
+				Write-Host("[{0}] - Has possible departmental user assignment [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $assignedUser)
+				
 				# Check the fallback mappings for shared systems.
 				# This is mostly for shared systems.
 				if($contactFallbackMappings) {
@@ -606,6 +615,9 @@ $comps | ForEach-Object {
 	if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
 		$logSystems[$_.Name]["FormFactor"] = $_.$PROP_FORMFACTOR
 	}
+	if (-Not [string]::IsNullOrWhitespace($PROP_MODEL)) {
+		$logSystems[$_.Name]["Model"] = $_.$PROP_MODEL
+	}
 	if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT) -Or $contactEmail -ne $null) {
 		$logSystems[$_.Name]["ContactEmail"] = $contactEmail
 		$logSystems[$_.Name]["AssignedUser"] = $assignedUser
@@ -626,7 +638,12 @@ $comps | ForEach-Object {
 
 # Email all the users we collected earlier.
 $success_email_count = 0
+$failed_email_count = 0
 $VIPuser_contact_count = 0
+$_email_retry_limit = 0
+if ($EMAIL_RETRY_LIMIT -ne $null) {
+	$_email_retry_limit = $EMAIL_RETRY_LIMIT
+}
 if (-Not $EMAIL_ASSIGNEDUSER) {
 	Write-Host("[{0}] Would have [{1}] users to email, however `$EMAIL_ASSIGNEDUSER is set to $EMAIL_ASSIGNEDUSER" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
 } else {
@@ -636,7 +653,6 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 		$systems = $ht.Value
 		if ($email -match "@") {
 			$isVIPUser = $false
-			Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
 			$msgHtml = $EMAIL_INTRO_HTML
 			$msgSystemTable = ""
 			
@@ -654,9 +670,9 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 						}
 						$msgSystemTable += @"
 			<tr>
-				<td>$systemName</td><td>{0}</td><td>$($system.FormFactor)</td><td>$($system.LastLogonDate)</td>
+				<td>$systemName</td><td>$assetTag</td><td>$($system.FormFactor)</td><td>$($system.Model)</td><td>$($system.LastLogonDate)</td>
 			</tr>
-"@ -f $assetTag
+"@
 					}
 				}
 			}
@@ -666,7 +682,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 	
 	<table border=1>
 		<tr>
-			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td>
+			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Model</td><td>Last Active Date</td>
 		</tr>
 		$msgSystemTable
 	</table>
@@ -689,29 +705,47 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 					DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 					SmtpServer = $EMAIL_SMTP
 				}
-				
 				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
 					$emailParams["BCC"] = $EMAIL_BCC
 				}
 			
-				$sleep_secs = $EMAIL_SLEEP_SECS
-				try {
-					if (-Not $DryRun) {
-						Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
-					}
-					$email_success = $true
-					$success_email_count++
-					
-					if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+				$email_retry_count=0
+				while($email_retry_count -le $_email_retry_limit -And -Not $email_success) {
+					Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
+					$sleep_secs = $EMAIL_SLEEP_SECS
+					try {
+						if (-Not $DryRun) {
+							Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
+						}
+						$email_success = $true
+						
+						if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+							$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						}
+					} catch {
+						Write-Error $_
 						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						$email_success = $false
+						if ($EMAIL_RETRY_LIMIT) {
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}. Retry count {3} of {4}. " -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count, $email_retry_count, $EMAIL_RETRY_LIMIT)
+						} else {
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count)
+						}
+						
+						$email_retry_count++
+						# Only increment the failed count if we've reached the limit without any successfully sent emails
+						if ($email_retry_count -gt $_email_retry_limit) {
+							Write-Host("[{0}] ERROR: Over retry limit for emailing [{1}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
+							$failed_email_count++
+							$error_count++
+						}
 					}
-				} catch {
-					Write-Error $_
-					$error_count++
-					$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+					# Wait until sending out the next email.
+					Start-Sleep -Seconds $sleep_secs
 				}
-				# Wait until sending out the next email.
-				Start-Sleep -Seconds $sleep_secs
+				if ($email_success) {
+					$success_email_count++
+				}
 			}
 			# If we successfully sent an email, make sure to log it.
 			if ($email_success) {
@@ -733,7 +767,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 	if ($DryRun) {
 		Write-Host("[{0}] Would have emailed [{1}] users (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
 	} else {
-		Write-Host("[{0}] Emailed [{1}] users (including {2} VIPs)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, $VIPuser_contact_count)
+		Write-Host("[{0}] Emailed [{1}] users (including {2} VIPs) with {3} failed emails." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, $VIPuser_contact_count, $failed_email_count)
 	}
 }
 
@@ -760,10 +794,10 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [{2}] VIPs). Skipped processing [{3}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$VIPuser_contact_count] VIPs). Failed to email [$failed_email_count] users. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
 
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
-"@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, $VIPuser_contact_count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
+"@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
 
 	Write-Host($emailParams.Body)
 	Send-MailMessage @emailParams -BodyAsHtml
