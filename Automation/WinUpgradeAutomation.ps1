@@ -24,7 +24,7 @@
 	Requirements:
 	* RSAT AD Tools
 	
-	EOLVER and UPGRADEVER must be updated periodically in this script. UPGRADEVER is only used in the report names.
+	EOLVER and UPGRADEVER will need to be updated for each unique campaign.
 	
 	Email will be sent out to the assigned user if its valid (contains "@"). If it doesn't exist, then the first USS staff member not a member of USS IT will be used instead, searching LastLogonUser then Primary Users in that order.
 	
@@ -32,6 +32,8 @@
 	Author: mcarras8
 	
 	Changelog
+	07-21-25 - mcarras8 - Fix for ContactName in emails, and emails not being retried
+	07-17-25 - mcarras8 - Add table of any emailed VIP Users in report email. And add "Name" (DisplayName) to reports
 	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
 						- Fix for VIP Users
 	07-09-25 - mcarrasu - Added support for marking VIP users in reports. Also ensured emails will never go out to invalid addresses
@@ -179,11 +181,11 @@ $EMAIL_DETAILED_NOTES = $false
 $EMAIL_SLEEP_SECS = 10
 # Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
 # The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
-$EMAIL_SLEEP_EXTRA_MOD=12
+$EMAIL_SLEEP_EXTRA_MOD=10
 $EMAIL_SLEEP_EXTRA_SECS = 60
 # Attempt to send the email again on failure after waiting $EMAIL_SLEEP_EXTRA_SECS.
 # Set to 0 to disable.
-$EMAIL_RETRY_LIMIT = 2
+$EMAIL_RETRY_LIMIT = 4
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
@@ -486,17 +488,20 @@ foreach ($k in $COMP_PROPS.Keys) {
 $comps | Select $selectarray | Export-CSV -NoTypeInformation -Force $EXPORT_ALL_SYSTEMS_PATH
 Write-Host("[{0}] Exported {1} systems requiring Windows 11 upgrade collected from AD to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count, $EXPORT_ALL_SYSTEMS_PATH)
 
+# Default properties when calling Get-ADUser
+$_ADUSERS_PROPS_DEFAULT = @("Company","Department","mail","UserPrincipalName","DisplayName")
+
 # Get excluded contact users.
 $adUserBlacklist = $null
 if (($CONTACTUSER_EXCLUDE_GROUPS | Measure).Count -gt 0) {
-	$adUserBlacklist = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_GROUPS -Nested -Verbose | Select -Unique
+	$adUserBlacklist = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_GROUPS -Nested -Verbose -ADProperties $_ADUSERS_PROPS_DEFAULT | Select -Unique
 }
 $adUserBlacklistCount = ($adUserBlacklist | Measure).Count
 $itUsers = $null
 $itUsersCount = 0
 if (($CONTACTUSER_EXCLUDE_ITGROUPS | Measure).Count -gt 0) {
 	try {
-		$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose | Select -Unique
+		$itUsers = Get-ADUsersByGroup $CONTACTUSER_EXCLUDE_ITGROUPS -Nested -Verbose -ADProperties $_ADUSERS_PROPS_DEFAULT | Select -Unique
 		$itUsersCount = ($itUsers | Measure).Count
 	} catch {
 		Write-Error $_
@@ -510,7 +515,7 @@ $adUserWhitelistCount = 0
 if (($CONTACTUSER_INCLUDE_GROUPS | Measure).Count -gt 0) {
 	try {
 		Write-Host("[{0}] Collecting AD group members to include from {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($CONTACTUSER_INCLUDE_GROUPS -join ", "))
-		$aduserWhitelist = Get-ADUsersByGroup $CONTACTUSER_INCLUDE_GROUPS -Nested -Verbose
+		$aduserWhitelist = Get-ADUsersByGroup $CONTACTUSER_INCLUDE_GROUPS -Nested -Verbose -ADProperties $_ADUSERS_PROPS_DEFAULT
 		$adUserWhitelistCount = ($aduserWhitelist | Measure).Count
 	} catch {
 		Write-Error $_
@@ -534,7 +539,7 @@ $VIPUsersCount = 0
 if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
 	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
 	try {
-		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -Nested -Verbose
+		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -Nested -Verbose -ADProperties $_ADUSERS_PROPS_DEFAULT
 		$VIPUsersCount = ($VIPUsers | Measure).Count
 	} catch {
 		Write-Error $_
@@ -572,7 +577,7 @@ $processed_systems = foreach($comp in $comps) {
 	Write-Verbose("[{0}] [{1}] Initial contact user: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 	if ($contactuser -match "@") {
 		try {
-			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
+			$aduser = Get-ADUserCached -User $contactuser -Domain $USER_DOMAIN -Properties $_ADUSERS_PROPS_DEFAULT
 			Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
 			if (-Not $aduser.Enabled) {
 				Write-Warning("[{0}] [{1}] Assigned user [{2}] is disabled in AD" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
@@ -608,7 +613,7 @@ $processed_systems = foreach($comp in $comps) {
 					} else {
 						Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $fallbackContact)
 						
-						$aduser = Get-ADUserCached -User $fallbackContact -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
+						$aduser = Get-ADUserCached -User $fallbackContact -Domain $USER_DOMAIN -Properties $_ADUSERS_PROPS_DEFAULT
 						Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Enabled={3}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Enabled)
 						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
 							Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $comp.Name, $contactuser)
@@ -643,7 +648,7 @@ $processed_systems = foreach($comp in $comps) {
 					# Also check the user's company to see if they match our supported companies.
 					# Finally, check if the user is a member of IT.
 					try {
-						$aduser = Get-ADUserCached -User $u -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
+						$aduser = Get-ADUserCached -User $u -Domain $USER_DOMAIN -Properties $_ADUSERS_PROPS_DEFAULT
 						Write-Verbose("[{0}] [{1}] Got back AD user info for LastLogonUser: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Company, $aduser.Enabled)
 						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
 							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u)
@@ -683,7 +688,7 @@ $processed_systems = foreach($comp in $comps) {
 						Write-Verbose("[{0}] [{1}] Checking primary user [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $user)
 						if (-Not [string]::IsNullOrWhitespace($user) -and $user -notin $CONTACTUSER_EXCLUDE -and $user -notmatch $CONTACTUSER_EXCLUDE_REGEX) {
 							try {
-								$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN -Properties "Company","Department","mail","UserPrincipalName"
+								$aduserTemp = Get-ADUserCached -User $user -Domain $USER_DOMAIN -Properties $_ADUSERS_PROPS_DEFAULT
 								Write-Verbose("[{0}] [{1}] Got back AD user info: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduserTemp.distinguishedname, $aduserTemp.Company, $aduserTemp.Enabled)
 								# Exclude IT Users, if set.
 								if ($itUsersCount -le 0 -Or $aduserTemp.distinguishedname -notin $itUsers.distinguishedname) {
@@ -718,7 +723,7 @@ $processed_systems = foreach($comp in $comps) {
 	# Check if user is in VIP users groups (if we looked them up)
 	if ($aduser.distinguishedname -ne $null) {
 		$is_contactuser_vip = ($VIPUsersCount -gt 0 -And $aduser.distinguishedname -in $VIPUsers.distinguishedname)
-		Write-Verbose("[{0}] [{1]] is in VIP Users groups: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $aduser.distinguishedname, $is_contactuser_vip)
+		#Write-Verbose("[{0}] [{1]] is in VIP Users groups: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $aduser.distinguishedname, $is_contactuser_vip)
 	}
 			
 	if (-Not [string]::IsNullOrEmpty($skip_reason)) {
@@ -767,6 +772,7 @@ $processed_systems = foreach($comp in $comps) {
 		[PSCustomObject]@{
 			Name=$comp.Name
 			ContactUser=$contactuser
+			ContactName=$aduser.DisplayName
 			Department=$aduser.Department
 			AssetTag=$comp.($COMP_PROPS.AssetTag)
 			FormFactor=$comp.($COMP_PROPS.FormFactor)
@@ -797,6 +803,10 @@ $success_email_count = 0
 $failed_email_count = 0
 $vip_users_email_count = 0
 $emailed_users = $null
+$_email_retry_limit = 0
+if ($EMAIL_RETRY_LIMIT -ne $null) {
+	$_email_retry_limit = $EMAIL_RETRY_LIMIT
+}
 if ($ManageGroupOnly) {
 	Write-Host("[{0}] Skipping emails due to -ManageGroupOnly switch." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
 } else {
@@ -804,6 +814,7 @@ if ($ManageGroupOnly) {
 	$emailed_users = foreach ($o in $contactusers_systems) {
 		$user = $o.Name
 		$department = $o.Group.Department | Select -Unique -First 1
+		$user_displayname = $o.Group.ContactName | Select -Unique -First 1
 		$systems = $o.Group
 		
 		# -- System Table --
@@ -995,39 +1006,44 @@ if ($ManageGroupOnly) {
 				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
 					$emailParams["BCC"] = $EMAIL_BCC
 				}
+
 				$email_retry_count=0
-				while($email_retry_count -le $EMAIL_RETRY_LIMIT -And -Not $email_success) {
+				while($email_retry_count -le $_email_retry_limit -And -Not $email_success) {
+					Write-Host("[{0}] Sending email to [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
 					$sleep_secs = $EMAIL_SLEEP_SECS
 					try {
-						Write-Host("[{0}] Sending email to [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
 						Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
 						$email_success = $true
-						$success_email_count++
-						if ($is_vip) {
-							$vip_users_email_count++
-						}
 						
 						if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
 							$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
 						}
 					} catch {
 						Write-Error $_
-						$error_count++
 						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						$email_success = $false
 						if ($EMAIL_RETRY_LIMIT) {
-							Write-Host("[{0}] ERROR: Failed to send to [{1}]. Total sent so far: {2}. Retry count {3} of {4}. " -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count, $email_retry_count, $EMAIL_RETRY_LIMIT)
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}. Retry count {3} of {4}. " -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count, $email_retry_count, $EMAIL_RETRY_LIMIT)
 						} else {
-							Write-Host("[{0}] ERROR: Failed to send to [{1}]. Total sent so far: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count)
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count)
 						}
 						
 						$email_retry_count++
 						# Only increment the failed count if we've reached the limit without any successfully sent emails
-						if ($email_retry_count -gt $EMAIL_RETRY_LIMIT) {
+						if ($email_retry_count -gt $_email_retry_limit) {
+							Write-Host("[{0}] ERROR: Over retry limit for emailing [{1}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
 							$failed_email_count++
+							$error_count++
 						}
 					}
 					# Wait until sending out the next email.
 					Start-Sleep -Seconds $sleep_secs
+				}
+				if ($email_success) {
+					$success_email_count++
+					if ($is_vip) {
+						$vip_users_email_count++
+					}
 				}
 			}
 		}
@@ -1035,7 +1051,8 @@ if ($ManageGroupOnly) {
 		$counter++
 		
 		[PSCustomObject]@{
-			ContactUser = $user
+			User = $user
+			Name = $user_displayname
 			Department = $department
 			VIP = $is_vip
 			SystemCount = ($systems | Measure).Count
@@ -1069,6 +1086,7 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 		try {
 			$group = Get-ADGroup $NOTIFICATION_GROUP
 			if (-Not [string]::IsNullOrEmpty($group.distinguishedname)) {
+				# This group should never be nested, so we can use this method.
 				$groupMembers = Get-ADUser -LDAPFilter "(memberOf=$($group.distinguishedname))"
 				if (($groupMembers | Measure).Count -le 0) {
 					Write-Host("[{0}] Group is currently empty." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
@@ -1114,7 +1132,7 @@ if ($DryRun) {
 	} else {
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
-	$emailParams["Body"] = @"
+	$msgHTML = @"
 <p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$vip_users_email_count] VIP users). Failed to contact $failed_email_count users. See [$EXPORT_EMAILED_SYSTEMS_PATH] for more info.</p>
 
 <p><b>Skipped processing [{2}] systems (no valid contact, ineligible, or otherwise excluded). Please check [$EXPORT_SKIPPED_SYSTEMS_PATH] and email / update manually as needed.</b></p>
@@ -1122,6 +1140,30 @@ if ($DryRun) {
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
 "@ -f ($emailed_users | Measure).Count, ($processed_systems | Measure).Count, ($skipped_systems | Measure).Count
 
+	# Display table of VIP users (if any)
+	$vip_users = $emailed_users | where {$_.VIP -eq $true}
+	if (($vip_users | Measure).Count -gt 0) {
+		$msgHTML += @"
+<b>VIP Users Emailed</b><br />
+<table border=1>
+	<tr>
+		<td>Email</td><td>Name</td><td>Department</td><td>Systems</td>
+	</tr>
+"@
+		foreach ($u in $vip_users) {
+			$msgHTML += @"
+	<tr>
+		<td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td>
+	</tr>
+"@ -f $u.User, $u.Name, $u.Department, $u.Systems 
+		}
+		
+		$msgHTML += @"
+	</table>
+"@
+	}
+	
+	$emailParams["Body"] = $msgHTML
 	Send-MailMessage @emailParams -BodyAsHtml
 }
 
