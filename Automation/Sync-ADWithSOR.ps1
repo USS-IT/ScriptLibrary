@@ -3,8 +3,6 @@
 #
 # Requirements:
 # * RSAT: Active Directory PowerShell module.
-# -- Changelog --
-# 4-16-24 - MJC - Added emailed error reports and changelog.
 # ---------------
 
 # -- START CONFIGURATION --
@@ -37,6 +35,7 @@ $ASSET_SYNC_MAP = @{
 	model = "extensionAttribute7"
 	"PC Checkboxes" = "extensionAttribute9"
 	"LastLogonUser" = "extensionAttribute10"
+	"status_label" = "extensionAttribute11"
 }
 # Field in SOR to match on AD name.
 $ASSET_FIELD_NAME = "name"
@@ -171,9 +170,8 @@ foreach($asset in $sor_assets) {
 				$assigned_to = $Matches[1]
 			}
 		}
-		if ($DEBUG_LOGGING) {
-			Write-Host("[{0}] [{1}] assigned_to={2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $assigned_to)
-		}
+		
+		Write-Verbose("[{0}] [{1}] assigned_to={2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $assigned_to)
 		
 		# Loop over each mapped field key.
 		foreach($key in $ASSET_SYNC_MAP.Keys) {
@@ -186,7 +184,7 @@ foreach($asset in $sor_assets) {
 			$ad_value = $ad_asset.$prop
 			try {
 				# For multi-value attributes like serialNumber
-				if($ad_value.GetType().Name -eq "ADPropertyValueCollection") {
+				if($ad_value -ne $null -And $ad_value.GetType().Name -eq "ADPropertyValueCollection") {
 					$ad_value = $ad_asset.$prop | Select -First 1
 				}
 			} catch {}
@@ -198,8 +196,8 @@ foreach($asset in $sor_assets) {
 					Write-Host("[{0}] [{1}] attr={2} [{3}] -ne [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 					$replace_attrs.Add($prop, $sor_value)
 				}
-			} elseif ($DEBUG_LOGGING) {
-				Write-Host("[{0}] [{1}] attr={2} [{3}] -eq [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
+			} else {
+				Write-Verbose("[{0}] [{1}] attr={2} [{3}] -eq [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 			}
 		}
 		# Loop over the fields to generate a description.
@@ -266,7 +264,7 @@ if (-Not [string]::IsNullOrEmpty(($ASSET_NOT_FOUND_ERASE_ATTRS | Select -First 1
 		$clear_attrs = @()
 		foreach($attr in $ASSET_NOT_FOUND_ERASE_ATTRS) {
 			$val = $ad_asset.$attr
-			if($val.GetType().Name -eq "ADPropertyValueCollection") {
+			if($val -ne $null -And $val.GetType().Name -eq "ADPropertyValueCollection") {
 				$val = $val | Select -First 1
 			}
 			if (-Not [string]::IsNullOrEmpty($val)) {
@@ -305,7 +303,7 @@ if (-Not [string]::IsNullOrWhiteSpace($EMAIL_SMTP)) {
 			To =  $EMAIL_ERROR_REPORT_TO
 			Subject = "Errors from $_scriptName"
 			Body = "There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See attached logfile for more details."
-			Priority = "High"
+			#Priority = "High"
 			DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 			SmtpServer = $EMAIL_SMTP
 		}
