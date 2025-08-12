@@ -33,6 +33,7 @@
 	
 	Changelog
 	08-12-25 - mcarras8 - Combine reports for all processed systems and skipped systems, and changed report names
+						- Fix bug for SkipReason
 	07-21-25 - mcarras8 - Fix for ContactName in emails, and emails not being retried
 	07-17-25 - mcarras8 - Add table of any emailed VIP Users in report email. And add "Name" (DisplayName) to reports
 	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
@@ -727,7 +728,7 @@ $processed_systems = foreach($comp in $comps) {
 		#Write-Verbose("[{0}] [{1]] is in VIP Users groups: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $aduser.distinguishedname, $is_contactuser_vip)
 	}
 			
-	if (-Not [string]::IsNullOrEmpty($skip_reason)) {
+	if ([string]::IsNullOrEmpty($skip_reason)) {
 		# Only continue if we have a valid contact user
 		if ($contactuser -notmatch "@") {
 			$skip_reason = "No Valid Contact User"
