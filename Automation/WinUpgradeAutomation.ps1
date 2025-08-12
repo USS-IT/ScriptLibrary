@@ -32,6 +32,7 @@
 	Author: mcarras8
 	
 	Changelog
+	08-12-25 - mcarras8 - Combine reports for all processed systems and skipped systems, and changed report names
 	07-21-25 - mcarras8 - Fix for ContactName in emails, and emails not being retried
 	07-17-25 - mcarras8 - Add table of any emailed VIP Users in report email. And add "Name" (DisplayName) to reports
 	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
@@ -199,9 +200,9 @@ $IMPORT_INELIGIBLE_SYSTEMS_FP = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\
 $SKIP_INELIGIBLE_SYSTEMS = $true
 
 # Path to save reports to.
-$EXPORT_ALL_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems.csv"
+$EXPORT_ALL_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_ad.csv"
 $EXPORT_SKIPPED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_skipped.csv"
-$EXPORT_PROCESSED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_with_contact.csv"
+$EXPORT_PROCESSED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_all_processed.csv"
 $EXPORT_EMAILED_SYSTEMS_PATH = "\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\WinUpgrade\win11_${UPGRADEVER}_upgrade_systems_emailed.csv"
 
 # Path and prefix for the Start-Transcript logfiles.
@@ -744,57 +745,48 @@ $processed_systems = foreach($comp in $comps) {
 		}
 	}
 	
-	# We skipped this system.
-	If (-not [string]::IsNullOrEmpty($skip_reason)) {
-		$skipped_systems += @(
-			[PSCustomObject]@{
-				Name=$comp.Name
-				AssetTag=$comp.($COMP_PROPS.AssetTag)
-				AssignedUser=$comp.($COMP_PROPS.AssignedUser)
-				FormFactor=$comp.($COMP_PROPS.FormFactor)
-				LastLogonDate=$lastlogondate
-				IsIncompatible=$is_incompatible
-				IsShared=$is_sharedsystem
-				IsAssigned=$is_assigned
-				IsVIPUser=$is_contactuser_vip
-				IsStale=$is_stale
-				OS=$comp.operatingsystemversion
-				SkippedReason=$skip_reason
-				Link=$link_url
-			}
-		)
-	} elseif ($contactuser -match "@") {
+	if ([string]::IsNullOrEmpty($skip_reason) -And $contactuser -match "@") {
 		# Add the system to our list.
 		Write-Verbose("[{0}] [{1}] Contact User is valid: [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $contactuser)
 		$contactuser = $contactuser.ToLower()
-
-		# Note: ADUser is not used in any exports.
-		[PSCustomObject]@{
-			Name=$comp.Name
-			ContactUser=$contactuser
-			ContactName=$aduser.DisplayName
-			Department=$aduser.Department
-			AssetTag=$comp.($COMP_PROPS.AssetTag)
-			FormFactor=$comp.($COMP_PROPS.FormFactor)
-			LastLogonDate=$lastlogondate
-			IsIncompatible=$is_incompatible
-			IsShared=$is_sharedsystem
-			IsAssigned=$is_assigned
-			IsVIPUser=$is_contactuser_vip
-			IsStale=$is_stale
-			OS=$comp.operatingsystemversion
-			Link=$link_url
-			ADUser = $aduser
-		}
 	}
+	
+	# Note: ADUser is not used in any exports.
+	[PSCustomObject]@{
+		Name=$comp.Name
+		ContactUser=$contactuser
+		ContactName=$aduser.DisplayName
+		Department=$aduser.Department
+		AssetTag=$comp.($COMP_PROPS.AssetTag)
+		FormFactor=$comp.($COMP_PROPS.FormFactor)
+		LastLogonDate=$lastlogondate
+		IsIncompatible=$is_incompatible
+		IsShared=$is_sharedsystem
+		IsAssigned=$is_assigned
+		IsVIPUser=$is_contactuser_vip
+		IsStale=$is_stale
+		OS=$comp.operatingsystemversion
+		Link=$link_url
+		ADUser = $aduser
+		SkippedReason = $skip_reason
+		AssignedUser = $comp.($COMP_PROPS.AssignedUser)
+		LastLogonUser = $comp.($COMP_PROPS.LastLogonUser)
+		PrimaryUsers = $comp.($COMP_PROPS.PrimaryUsers)
+	}
+	
 	$counter++
 }
+
 # Group the results by each contactuser.
-$contactusers_systems = $processed_systems | Group-Object -Property ContactUser
+$contactusers_systems = $processed_systems | where {[string]::IsNullOrEmpty($_.SkippedReason) -And $_.ContactUser -match "@"}
+$contactusers_systems_count = ($contactusers_systems | Measure).Count
+$contactusers_systems = $contactusers_systems | Group-Object -Property ContactUser
 
 # Export systems reports.
 $processed_systems | Select * -ExcludeProperty ADUser | Export-CSV -NoTypeInformation -Force $EXPORT_PROCESSED_SYSTEMS_PATH
-Write-Host("[{0}] Processing {1} users referencing a combined {2} systems ({3} processed total). Exported report to [{4}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactusers_systems | Measure).Count, ($processed_systems | Measure).Count, $counter, $EXPORT_PROCESSED_SYSTEMS_PATH)
+Write-Host("[{0}] Processing {1} users referencing a combined {2} systems ({3} processed total). Exported report to [{4}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactusers_systems | Measure).Count, $contactusers_systems_count, ($processed_systems | Measure).Count, $EXPORT_PROCESSED_SYSTEMS_PATH)
+
+$skipped_systems = $processed_systems | Select * -ExcludeProperty ADUser | where {-Not [string]::IsNullOrEmpty($_.SkippedReason)}
 $skipped_systems | Export-CSV -NoTypeInformation -Force $EXPORT_SKIPPED_SYSTEMS_PATH
 Write-Host("[{0}] Exported report of {1} skipped systems to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($skipped_systems | Measure).Count, $EXPORT_SKIPPED_SYSTEMS_PATH)
 
