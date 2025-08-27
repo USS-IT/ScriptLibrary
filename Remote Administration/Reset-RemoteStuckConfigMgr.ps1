@@ -6,6 +6,8 @@
 	Resets failed program / TS stuck installing on a remote or local computer. Lists all requests found with CompletionState = 'Failure'. If none are in the correct stalled state, gives choice to try restarting the Config Mgr service anyway.
 	
 	.NOTES
+	Once the request is deleted it may show up as either "Failed" or "Installed" under Available or Installation Status. Even if it says "Installed" it's probably not actually installed if the request needed to be deleted.
+	
 	If running locally, give the local computer name.
 	
 	Created: 8-27-25
