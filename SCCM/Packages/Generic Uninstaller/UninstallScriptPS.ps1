@@ -151,7 +151,7 @@ If (-Not $OutputOnly) {
 			}
 		}
 		# Additional parameters given to the setup utility.
-		If (-Not [string]::IsNullOrEmpty($Parameters | Select -First 1)) {
+		If ($Parameters) {
 			If ($OverrideParameters) {
 				If (-Not $msiGUID) {
 					$Params = $Parameters
@@ -179,8 +179,8 @@ If (-Not $OutputOnly) {
 	# & $uninstallExe $Params
 	# Start uninstaller and wait for it to finish before continuing.
 	$procParams = @{}
-	If (-Not [string]::IsNullOrEmpty($Params | Select -First 1)) {
-		Write-Host("[$_scriptname] Calling: $uninstallExe " + ($Params -join " "))
+	If ($Params) {
+		Write-Host("[$_scriptname] Calling: $uninstallExe {0}" -f ($Params -join " "))
 		$procParams.Add("ArgumentList", $Params)
 	} else {
 		Write-Host("[$_scriptname] Calling: $uninstallExe")
@@ -198,16 +198,18 @@ If (-Not $OutputOnly) {
 	If($WaitInstallLocationDeleted -And -not [string]::IsNullOrWhitespace($installLocation)) {
 		if ((Test-Path $installLocation -PathType Container)) {
 			$msg = "[$_scriptName] InstallLocation [$installLocation] still found after uninstallation"
-			if ($WaitInstallLocationDeletedTimeout -gt 0) {
+			if ($WaitInstallLocationDeletedTimeout -ne $null) {
 				$msg += ", waiting up to $WaitInstallLocationDeletedTimeout seconds..."
 			}
 			Write-Host $msg
 		}
 		$sleepTime = 10
 		$counter = 0
-		while($counter -le $WaitInstallLocationDeletedTimeout -And (Test-Path $installLocation -PathType Container)) {
-			Start-Sleep $sleepTime
-			$counter += $sleepTime
+		if ($WaitInstallLocationDeletedTimeout -ne $null) {
+			while($counter -le $WaitInstallLocationDeletedTimeout -And (Test-Path $installLocation -PathType Container)) {
+				Start-Sleep $sleepTime
+				$counter += $sleepTime
+			}
 		}
 	}
 	
