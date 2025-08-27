@@ -95,6 +95,11 @@ Creates an import file for SCCM from a previous Snipe-It export for re-importing
 Compiles a report of assets to be deleted cross-referenced with our SOR (Snipe-It). The asset report must have the "ComputerName" column.
 </details>
 
+<details>
+<summary>Get-SnipeItInfoFromDefenderExport.ps1</summary>
+Cross-references an export from the Defender Health Report with the latest Snipe-It export.
+</details>
+
 ## Network Shares
 
 <details>
@@ -166,3 +171,7 @@ Remotely disables or enables a local account on a given machine. This must be ru
 Renames a remote computer using modern credentials (including virtual smartcards).
 </details>
 
+<details>
+<summary>Reset-RemoteStuckConfigMgr.ps1</summary>
+Resets failed program / TS stuck installing on a remote or local computer. Also allows restarting ConfigMgr service.
+</details>

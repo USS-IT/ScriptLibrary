@@ -1,6 +1,6 @@
 <#
 	.SYNOPSIS
-	Resets failed program / TS stuck installing on a remote or local computer.
+	Resets failed program / TS stuck installing on a remote or local computer. Also allows restarting ConfigMgr service.
 	
 	.DESCRIPTION
 	Resets failed program / TS stuck installing on a remote or local computer. Lists all requests found with CompletionState = 'Failure'. If none are in the correct stalled state, gives choice to try restarting the Config Mgr service anyway.
