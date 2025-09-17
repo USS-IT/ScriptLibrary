@@ -172,6 +172,11 @@ Renames a remote computer using modern credentials (including virtual smartcards
 </details>
 
 <details>
+<summary>Get-RemoteConfigMgrTasks.ps1</summary>
+Returns the status of all pending tasks/requests in ConfigMgr / SCCM client.
+</details>
+
+<details>
 <summary>Reset-RemoteStuckConfigMgr.ps1</summary>
 Resets failed program / TS stuck installing on a remote or local computer. Also allows restarting ConfigMgr service.
 </details>
