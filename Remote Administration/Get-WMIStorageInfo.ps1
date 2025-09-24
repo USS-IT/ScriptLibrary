@@ -20,7 +20,7 @@ If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -C
 } else {
 	Write-Warning "[$comp] did not respond to any ping attempts, querying anyway..."
 }
-$owmi = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $comp | ? {$_. DriveType -eq 3} | select DeviceID, {$_.Size /1GB}, {$_.FreeSpace /1GB}, VolumeName
+$owmi = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $comp | ? {$_. DriveType -eq 3} | select DeviceID, VolumeName, @{N="Size (GB)"; Expression={[Math]::Round($_.Size /1GB, 2)}}, @{N="FreeSpace (GB)"; Expression={[Math]::Round($_.FreeSpace /1GB, 2)}}
 if($owmi) {
 	$owmi | Format-Table | Out-String | Write-Host
 	$owmi2 = Get-WmiObject -Query "Select * from Win32_diskdrive" -ComputerName $comp

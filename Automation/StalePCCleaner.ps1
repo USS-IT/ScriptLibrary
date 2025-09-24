@@ -23,6 +23,11 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	07-21-25 - mcarras8 - Retry failed emails, show model info in email, additional logging
+	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
+						- Fix for VIP Users
+	07-09-25 - mcarrasu - Added support for marking VIP users in reports
+	07-03-25 - mcarras8 - Added shared contact mapping support
 	04-10-25 - mcarras8 - Revamped script
 #>
 param(
@@ -52,6 +57,8 @@ $PROP_ASSIGNMENT = "extensionAttribute2"
 $PROP_FORMFACTOR = "extensionAttribute5"
 # AD attribute for asset tag
 $PROP_ASSETTAG = "extensionAttribute1"
+# AD attribute for model
+$PROP_MODEL = "extensionAttribute7"
 
 # The OU containing all contactable users.
 $OU_USER = "OU=PEOPLE,DC=win,DC=ad,DC=jhu,DC=edu"
@@ -61,7 +68,7 @@ $OU_COMPUTERS = 'OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # OU used to move retired computers to
 $OU_RETIREMENT = 'OU=USS-Retired,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # List of OUs to exclude from processing.
-$OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
+$OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-STARS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
 # Computers in this group will also be excluded.
 $Comp_Group_EXCLUDE = 'USS-StalePCExceptionComps'
 # If true, still delete the systems in $Comp_Group_EXCLUDE after $DATE_REMOVAL has passed.
@@ -70,11 +77,19 @@ $Comp_Group_EXCLUDE_Delete = $true
 $ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
 # If set, still email assigned users of excluded systems.
 $EMAIL_EXCLUDED_SYSTEMS = $true
+# Users in the these groups will be marked as "VIP" in reports.
+$VIP_USER_GROUPS = @("USS-VIP")
+
+# Fallback for shared systems and systems missing contact info. Matches on DistinguishedName.
+# Header: Pattern,Username
+# To match a name, start with "CN=". To match on an OU, use ",OU=<ou>,"
+# The script will check if the username still exists in AD.
+$CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
 
 # Location and filename for storing CSV results
 $CSV_RESULTS_PATH = "\\win.ad.jhu.edu\cloud\HSA$\ITServices\Reports\StalePCs"
 $CSV_RESULTS_FP = "$CSV_RESULTS_PATH\StalePCs-{0}.csv" -f (Get-Date -format 'MM-dd-yyyy')
-$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","FormFactor","AssetTag")
+$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","VIP","FormFactor","AssetTag")
 
 # Automated email settings.
 $EMAIL_ASSIGNEDUSER = $true
@@ -91,12 +106,15 @@ $EMAIL_INTRO_HTML = @"
 
 <p>Thank you for your cooperation.</p>
 "@
-# Number of seconds to sleep in-between each email.
+# Amount of time in seconds to sleep between emails.
 $EMAIL_SLEEP_SECS = 10
 # Number of successful emails to send before sleeping longer (e.g. 10 for every 10 emails).
 # The $EMAIL_SLEEP_EXTRA_SECS will also be used if any emails fail.
 $EMAIL_SLEEP_EXTRA_MOD=10
-$EMAIL_SLEEP_EXTRA_SECS = 30
+$EMAIL_SLEEP_EXTRA_SECS = 60
+# Attempt to send the email again on failure after waiting $EMAIL_SLEEP_EXTRA_SECS.
+# Set to 0 to disable.
+$EMAIL_RETRY_LIMIT = 4
 
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
@@ -344,6 +362,7 @@ function Get-ADUsersByGroup {
 # -- FUNCTION END --
 
 # -- START --
+$dateStart = Get-Date
 $error_count = 0
 $_scriptName = split-path $PSCommandPath -Leaf
 
@@ -365,6 +384,30 @@ try {
 
 if ($DryRun) {
 	Write-Host("[{0}] -DryRun set. Only output results to file/console. Using -WhatIf or otherwise skipping actions." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+}
+
+# Get a list of contact fallback mappings.
+$contactFallbackMappings = $null
+if (-Not [string]::IsNullOrEmpty($CONTACTUSER_MAPPING_FALLBACK_FP)) {
+	if (-Not (Test-Path $CONTACTUSER_MAPPING_FALLBACK_FP -PathType Leaf)) {
+		Write-Warning "Contact Fallback Mapping file [$CONTACTUSER_MAPPING_FALLBACK_FP] not found"
+	} else {
+		$contactFallbackMappings = Import-CSV $CONTACTUSER_MAPPING_FALLBACK_FP
+	}
+}
+
+# Collect VIP users. These will only be used for reports.
+$VIPUsers = $null
+$VIPUsersCount = 0
+if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
+	Write-Host("[{0}] Collecting VIP users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($VIP_USER_GROUPS -join ", "))
+	try {
+		$VIPUsers = Get-ADUsersByGroup $VIP_USER_GROUPS -ADProperties "mail" -Nested -Verbose
+		$VIPUsersCount = ($VIPUsers | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
 }
 
 # Scan Computers OU (SearchBase) for systems that have not been logged in since $warningDays.
@@ -434,6 +477,7 @@ $comps | ForEach-Object {
 		$pingResult = "Success"
 	} Else {
 		$pingResult = "Fail"
+		Write-Host("[{0}] No ping response from {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name)
 		
 		$skipProcessing = $false
 		# Get contact email and check if assigned user is excluded from processing.
@@ -462,8 +506,35 @@ $comps | ForEach-Object {
 					Write-Error $_
 					$error_count++
 				}
+			} elseif (-Not [string]::IsNullOrEmpty($assignedUser)) {
+				Write-Host("[{0}] - Has possible departmental user assignment [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $assignedUser)
+				
+				# Check the fallback mappings for shared systems.
+				# This is mostly for shared systems.
+				if($contactFallbackMappings) {
+					foreach($m in $contactFallbackMappings) {
+						if(-Not [string]::IsNullOrWhitespace($m.Pattern) -And $comp.distinguishedname -match $m.Pattern) {
+							$fallbackContact = $m.Username
+							if ([string]::IsNullOrWhitespace($m.Username)) {
+								Write-Error("[{0}] [{1}] - Matched fallback contact pattern [{2}] but Username column is blank" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $m.Pattern)
+								$error_count++
+							} else {
+								Write-Host("[{0}] [{1}] - Found fallback contact [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $fallbackContact)
+								
+								$u = Get-ADUserCached -User $fallbackContact -Properties "mail"
+								if (-Not $u.Enabled -Or $u.distinguishedname -notlike "CN=*,$OU_USER") {
+									Write-Warning("[{0}] [{1}] Fallback contact user [{2}] is disabled or not found in user OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"),  $_.Name, $fallbackContact)
+								} elseif (-Not [string]::IsNullOrWhitespace($u.mail)) {
+									$contactEmail = $u.mail
+								}
+							}
+							break
+						}
+					}
+				}
 			}
 		}
+		
 		# Check if system is in an excluded OU.
 		# Using -match in this way should allow matching sub-OUs.
 		If (-Not [string]::IsNullOrEmpty($ou) -And ($OU_EXCLUDE.Where({$ou -match $_}) | Measure-Object).Count -gt 0) {
@@ -544,10 +615,14 @@ $comps | ForEach-Object {
 	if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
 		$logSystems[$_.Name]["FormFactor"] = $_.$PROP_FORMFACTOR
 	}
+	if (-Not [string]::IsNullOrWhitespace($PROP_MODEL)) {
+		$logSystems[$_.Name]["Model"] = $_.$PROP_MODEL
+	}
 	if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT) -Or $contactEmail -ne $null) {
 		$logSystems[$_.Name]["ContactEmail"] = $contactEmail
 		$logSystems[$_.Name]["AssignedUser"] = $assignedUser
 		$logSystems[$_.Name]["Emailed"] = ""
+		$logSystems[$_.Name]["VIP"] = ""
 	}
 
 	# If we have a valid contact email, add to the list of users to email.
@@ -562,16 +637,22 @@ $comps | ForEach-Object {
 }
 
 # Email all the users we collected earlier.
+$success_email_count = 0
+$failed_email_count = 0
+$VIPuser_contact_count = 0
+$_email_retry_limit = 0
+if ($EMAIL_RETRY_LIMIT -ne $null) {
+	$_email_retry_limit = $EMAIL_RETRY_LIMIT
+}
 if (-Not $EMAIL_ASSIGNEDUSER) {
 	Write-Host("[{0}] Would have [{1}] users to email, however `$EMAIL_ASSIGNEDUSER is set to $EMAIL_ASSIGNEDUSER" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
 } else {
 	Write-Host("[{0}] Setting up [{1}] emails" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
-	$success_email_count = 0
 	foreach($ht in $contactUserSystems.GetEnumerator()) {
 		$email = $ht.Name
 		$systems = $ht.Value
 		if ($email -match "@") {
-			Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
+			$isVIPUser = $false
 			$msgHtml = $EMAIL_INTRO_HTML
 			$msgSystemTable = ""
 			
@@ -589,9 +670,9 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 						}
 						$msgSystemTable += @"
 			<tr>
-				<td>$systemName</td><td>{0}</td><td>$($system.FormFactor)</td><td>$($system.LastLogonDate)</td>
+				<td>$systemName</td><td>$assetTag</td><td>$($system.FormFactor)</td><td>$($system.Model)</td><td>$($system.LastLogonDate)</td>
 			</tr>
-"@ -f $assetTag
+"@
 					}
 				}
 			}
@@ -601,7 +682,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 	
 	<table border=1>
 		<tr>
-			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Last Active Date</td>
+			<td>Name</td><td>Asset Tag</td><td>Type</td><td>Model</td><td>Last Active Date</td>
 		</tr>
 		$msgSystemTable
 	</table>
@@ -612,7 +693,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 			
 			# Only send the email if we have at least one valid system.
 			$email_success = $false
-			if ($validSystems) {
+			if ($validSystems) {				
 				$emailUser = $email
 				$emailParams = @{
 					From = $EMAIL_FROM
@@ -624,43 +705,70 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 					DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 					SmtpServer = $EMAIL_SMTP
 				}
-				
 				if (-Not [string]::IsNullOrEmpty($EMAIL_BCC)) {
 					$emailParams["BCC"] = $EMAIL_BCC
 				}
 			
-				$sleep_secs = $EMAIL_SLEEP_SECS
-				try {
-					if (-Not $DryRun) {
-						Send-MailMessage @emailParams -BodyAsHtml
-					}
-					$email_success = $true
-					$success_email_count++
-					
-					if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+				$email_retry_count=0
+				while($email_retry_count -le $_email_retry_limit -And -Not $email_success) {
+					Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
+					$sleep_secs = $EMAIL_SLEEP_SECS
+					try {
+						if (-Not $DryRun) {
+							Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
+						}
+						$email_success = $true
+						
+						if ($EMAIL_SLEEP_EXTRA_MOD -And ($success_email_count % $EMAIL_SLEEP_EXTRA_MOD) -eq 0) {
+							$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						}
+					} catch {
+						Write-Error $_
 						$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+						$email_success = $false
+						if ($EMAIL_RETRY_LIMIT) {
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}. Retry count {3} of {4}. " -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count, $email_retry_count, $EMAIL_RETRY_LIMIT)
+						} else {
+							Write-Warning("[{0}] Failed to send to [{1}]. Total sent so far: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"], $success_email_count)
+						}
+						
+						$email_retry_count++
+						# Only increment the failed count if we've reached the limit without any successfully sent emails
+						if ($email_retry_count -gt $_email_retry_limit) {
+							Write-Host("[{0}] ERROR: Over retry limit for emailing [{1}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $emailParams["To"])
+							$failed_email_count++
+							$error_count++
+						}
 					}
-				} catch {
-					Write-Error $_
-					$error_count++
-					$sleep_secs = $EMAIL_SLEEP_EXTRA_SECS
+					# Wait until sending out the next email.
+					Start-Sleep -Seconds $sleep_secs
 				}
-				# Wait until sending out the next email.
-				Start-Sleep -Seconds $sleep_secs
+				if ($email_success) {
+					$success_email_count++
+				}
 			}
 			# If we successfully sent an email, make sure to log it.
 			if ($email_success) {
+				# Check if this is an VIP user.
+				$isVIPUser = $VIPUsersCount -gt 0 -And ($email -in $VIPUsers.mail)
+				if ($isVIPUser) {
+					$VIPuser_contact_count++
+				}
 				foreach($systemName in $systems) {
 					$logSystems[$systemName]["Emailed"] = $email
+					if ($VIPUsersCount -gt 0) {
+						$logSystems[$systemName]["VIP"] = $isVIPUser
+					}
 				}
 			}
 		}
 	}
-}
-if ($DryRun) {
-	Write-Host("[{0}] Would have emailed [{1}] users (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
-} else {
-	Write-Host("[{0}] Emailed [{1}] users" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
+	
+	if ($DryRun) {
+		Write-Host("[{0}] Would have emailed [{1}] users (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count)
+	} else {
+		Write-Host("[{0}] Emailed [{1}] users (including {2} VIPs) with {3} failed emails." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $success_email_count, $VIPuser_contact_count, $failed_email_count)
+	}
 }
 
 # Log all the systems to the results file, converting the nested hashtable to a PSCustomObject first.
@@ -686,7 +794,7 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
+<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$VIPuser_contact_count] VIPs). Failed to email [$failed_email_count] users. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
 
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
 "@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
@@ -694,6 +802,11 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 	Write-Host($emailParams.Body)
 	Send-MailMessage @emailParams -BodyAsHtml
 }
+
+Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $errorCount)
+
+$runtimeDiff = ((Get-Date) - $dateStart)
+Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
 
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null

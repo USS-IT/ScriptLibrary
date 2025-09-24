@@ -3,8 +3,6 @@
 #
 # Requirements:
 # * RSAT: Active Directory PowerShell module.
-# -- Changelog --
-# 4-16-24 - MJC - Added emailed error reports and changelog.
 # ---------------
 
 # -- START CONFIGURATION --
@@ -37,8 +35,9 @@ $ASSET_SYNC_MAP = @{
 	model = "extensionAttribute7"
 	"PC Checkboxes" = "extensionAttribute9"
 	"LastLogonUser" = "extensionAttribute10"
+	"status_label" = "extensionAttribute11"
 }
-# Field to match on name.
+# Field in SOR to match on AD name.
 $ASSET_FIELD_NAME = "name"
 # AD attribute to enter the current date (to show last sync date).
 # Only used when one of the other attributes is replaced or cleared.
@@ -50,6 +49,18 @@ $ASSET_REGEX_ASSIGNED_TO = "\s\(([^\s]+)\)$"
 # Regex for when to include the assigned_to field in the description.
 # Leave blank to always include it.
 $ASSET_DESCRIPTION_REGEX_ASSIGNED_TO = "@"
+
+# If an asset name no longer exists in SOR, wipe out the given properties.
+# Comment out or set to $null to skip.
+$ASSET_NOT_FOUND_ERASE_ATTRS = @(
+	$ASSET_SYNC_MAP["serial"], 
+	$ASSET_SYNC_MAP["asset_tag"],
+	$ASSET_SYNC_MAP["Primary Users"],
+	$ASSET_SYNC_MAP["assigned_to"],
+	$ASSET_SYNC_MAP["LastLogonUser"],
+	$ASSET_SYNC_MAP["Department"],
+	$ASSET_SYNC_MAP["location"]
+)
 
 # Array of columns from the SOR to use in the description (pipe-delimited).
 $DESCRIPTION_FORMAT_ARRAY = @("assigned_to", "Department", "asset_tag", "location")
@@ -73,6 +84,7 @@ $EMAIL_ERROR_REPORT_TO = @('mcarras8@jhu.edu','ussitservices@jhu.edu')
 # -- END CONFIGURATION --
 
 # -- START --
+$dateStart = Get-Date
 
 # Rotate log files
 if ($LOGFILE_ROTATE_DAYS -is [int] -And $LOGFILE_ROTATE_DAYS -gt 0) {
@@ -133,12 +145,21 @@ if($ASSET_SYNC_MAP.ContainsKey($LAST_UPDATE_ATTR)) {
 
 # Get assets from SOR imported CSV and AD. Limit to categories of PC or Mac.
 $sor_assets = Import-CSV $CSV_IMPORT_FILEPATH | where $ASSET_RESTRICT_WHERE_SCRIPTBLOCK
+Write-Host("[{0}] [{1}] assets imported from SOR export [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($sor_assets | Measure).Count, $CSV_IMPORT_FILEPATH)
 $ad_properties = $ASSET_SYNC_MAP.Values | foreach { $_ }
 $ad_assets = Import-AssetsFromAD -Properties $ad_properties -SearchBase $AD_IMPORT_SEARCHBASES -Verbose
 
 # Loop over all matching assets.
+$change_counter=0
+# Hash table of assets found in AD.
+$sor_assets_found = @{}
 foreach($asset in $sor_assets) {
+	Write-Verbose("[{0}] Processing SOR asset [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $asset.$ASSET_FIELD_NAME)
 	If (($ad_asset = $ad_assets | where {$_.Name -eq $asset.$ASSET_FIELD_NAME}) -And -Not [string]::IsNullOrEmpty($ad_asset.Name)) {
+		Write-Verbose("[{0}] Found AD asset for [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name)
+		
+		$sor_assets_found[$asset.$ASSET_FIELD_NAME] = $true
+		
 		$replace_attrs = @{}
 		$clear_attrs = @()
 		$assigned_to = $null
@@ -149,6 +170,9 @@ foreach($asset in $sor_assets) {
 				$assigned_to = $Matches[1]
 			}
 		}
+		
+		Write-Verbose("[{0}] [{1}] assigned_to={2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $assigned_to)
+		
 		# Loop over each mapped field key.
 		foreach($key in $ASSET_SYNC_MAP.Keys) {
 			$prop = $ASSET_SYNC_MAP.$key
@@ -160,7 +184,7 @@ foreach($asset in $sor_assets) {
 			$ad_value = $ad_asset.$prop
 			try {
 				# For multi-value attributes like serialNumber
-				if($ad_value.GetType().Name -eq "ADPropertyValueCollection") {
+				if($ad_value -ne $null -And $ad_value.GetType().Name -eq "ADPropertyValueCollection") {
 					$ad_value = $ad_asset.$prop | Select -First 1
 				}
 			} catch {}
@@ -172,6 +196,8 @@ foreach($asset in $sor_assets) {
 					Write-Host("[{0}] [{1}] attr={2} [{3}] -ne [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 					$replace_attrs.Add($prop, $sor_value)
 				}
+			} else {
+				Write-Verbose("[{0}] [{1}] attr={2} [{3}] -eq [{4}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $prop, $ad_value, $sor_value)
 			}
 		}
 		# Loop over the fields to generate a description.
@@ -188,6 +214,8 @@ foreach($asset in $sor_assets) {
 		if ($computed_description -ne $ad_asset.description) {
 			Write-Host("[{0}] [{1}] attr=description [{2}] -ne [{3}]" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $ad_asset.description, $computed_description)
 			$replace_attrs.Add("description", $computed_description)
+		} else {
+			Write-Verbose("[{0}] [{1}] No need to update description: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name, $ad_asset.description)
 		}
 		# Replace or clear attributes for this ad object (if any).
 		if($replace_attrs.Count -gt 0 -Or $clear_attrs.Count -gt 0) {
@@ -196,15 +224,16 @@ foreach($asset in $sor_assets) {
 				Write-Host("[{0}] [{1}] Updating last update attribute [{2}] due to changed attributes" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, $LAST_UPDATE_ATTR)
 				$replace_attrs.Add($LAST_UPDATE_ATTR, (Get-Date -Format "MM-dd-yyyy"))
 			}
-			if ($replace_attrs.Count -gt 0) {
+			if (($replace_attrs | Measure).Count -gt 0) {
 				Write-Host("[{0}] [{1}] Replace Atributes: {2}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, ($replace_attrs.Keys -join ","))
 			}
-			if ($clear_attrs.Count -gt 0) {
+			if (($clear_attrs | Measure).Count -gt 0) {
 				Write-Host("[{0}] [{1}] Clear Attributes: {2}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, ($clear_attrs -join ","))
 			}
-			if($clear_attrs.Count -gt 0) {
+			if(($clear_attrs | Measure).Count -gt 0) {
 				try {
 					Set-ADComputer $ad_asset.distinguishedname -Replace $replace_attrs -Clear $clear_attrs
+					$change_counter++
 				} catch {
 					Write-Error $_
 					$error_count++
@@ -217,11 +246,51 @@ foreach($asset in $sor_assets) {
 					$error_count++
 				}
 			}
+		} else {
+			Write-Verbose("[{0}] [{1}] Nothing to update" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ad_asset.Name)
 		}
 	}
 }
+Write-Host("[{0}] {1} AD computers updated from SOR" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $change_counter)
 
+# Loop over AD computers looking for those missing from SOR
+# This just clears the attributes we're syncing from SOR if the name is no longer found in the SOR.
+$change_counter=0
+if (-Not [string]::IsNullOrEmpty(($ASSET_NOT_FOUND_ERASE_ATTRS | Select -First 1))) {
+	Write-Host("[{0}] Processing systems in AD that are no longer found in SOR" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")))
+	foreach($ad_asset in ($ad_assets | where {$_.Name -notin $sor_assets.$ASSET_FIELD_NAME -And -Not [string]::IsNullOrEmpty($_.Name)})) {
+		Write-Verbose("[{0}] [{1}] not found in SOR" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name)
+		
+		$clear_attrs = @()
+		foreach($attr in $ASSET_NOT_FOUND_ERASE_ATTRS) {
+			$val = $ad_asset.$attr
+			if($val -ne $null -And $val.GetType().Name -eq "ADPropertyValueCollection") {
+				$val = $val | Select -First 1
+			}
+			if (-Not [string]::IsNullOrEmpty($val)) {
+				$clear_attrs += @($attr)
+			}
+		}
+		
+		if (($clear_attrs | Measure).Count -gt 0) {			
+			Write-Host("[{0}] [{1}] Clear Attributes (not found in SOR): {2}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $ad_asset.Name, ($clear_attrs -join ","))
+			
+			try {
+				Set-ADComputer $ad_asset.distinguishedname -Clear $clear_attrs
+				$change_counter++
+			} catch {
+				Write-Error $_
+				$error_count++
+			}
+		}
+	}
+}
+Write-Host("[{0}] {1} AD computers updated that were missing from SOR" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $change_counter)
+	
 Write-Host("[{0}] Caught {1} errors" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $error_count)
+
+$runtimeDiff = ((Get-Date) - $dateStart)
+Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
 
 # Stop logging
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
@@ -234,7 +303,7 @@ if (-Not [string]::IsNullOrWhiteSpace($EMAIL_SMTP)) {
 			To =  $EMAIL_ERROR_REPORT_TO
 			Subject = "Errors from $_scriptName"
 			Body = "There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See attached logfile for more details."
-			Priority = "High"
+			#Priority = "High"
 			DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 			SmtpServer = $EMAIL_SMTP
 		}
