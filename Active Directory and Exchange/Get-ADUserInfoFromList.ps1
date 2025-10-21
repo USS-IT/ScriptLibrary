@@ -10,7 +10,7 @@
 
 	Author: mcarras8
 	Created: 11-10-22
-	Last Updated: 2-26-25
+	Last Updated: 10-21-2025
 #>
 
 # Default output file locations.
@@ -42,13 +42,13 @@ $emails | % {
 	$Affiliation=""
 	if (-Not $Email.Contains('@')) {
 		$isUsernameMatch = $true
-		$user = Get-ADUser $Email -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
+		$user = Get-ADUser $Email -Properties $AD_PROPS -ErrorAction SilentlyContinue
 	} else {
 		$user = Get-ADUser -LDAPFilter ("(|(UserPrincipalName=$Email)(mail=$Email)(proxyAddresses=smtp:$Email)(proxyAddresses=SMTP:$Email))") -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
 		# If not found, check again using only the username
 		if (-Not [string]::IsNullOrEmpty($user.Name) -And $Email -match "(\w+)@" -And -Not [string]::IsNullOrWhitespace($matches[1])) {
 			try {
-				$user = Get-ADUser $matches[1] -Searchbase $USER_OU -Properties $AD_PROPS -ErrorAction SilentlyContinue
+				$user = Get-ADUser $matches[1] -Properties $AD_PROPS -ErrorAction SilentlyContinue
 			} catch {
 			}
 		}
