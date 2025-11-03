@@ -23,6 +23,8 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	11-03-25 - mcarras8 - Fixed typos. Added CC to report email.
+	08-19-25 - mcarras8 - Minor tweaks
 	07-21-25 - mcarras8 - Retry failed emails, show model info in email, additional logging
 	07-16-25 - mcarras8 - Fix for Send-MailMessage not retrying as intended
 						- Fix for VIP Users
@@ -70,9 +72,9 @@ $OU_RETIREMENT = 'OU=USS-Retired,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # List of OUs to exclude from processing.
 $OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-STARS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
 # Computers in this group will also be excluded.
-$Comp_Group_EXCLUDE = 'USS-StalePCExceptionComps'
-# If true, still delete the systems in $Comp_Group_EXCLUDE after $DATE_REMOVAL has passed.
-$Comp_Group_EXCLUDE_Delete = $true
+$COMP_GROUP_EXCLUDE = 'USS-StalePCExceptionComps'
+# If true, still delete the systems in $COMP_GROUP_EXCLUDE after $DATE_REMOVAL has passed.
+$COMP_GROUP_EXCLUDE_Delete = $true
 # Computers assigned to users in this group will also be excluded. Requires $PROP_ASSIGNMENT to be set and valid.
 $ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
 # If set, still email assigned users of excluded systems.
@@ -119,7 +121,11 @@ $EMAIL_RETRY_LIMIT = 4
 # Email a report at the end.
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
 $EMAIL_REPORT_TO = @("ussitservices@jhu.edu")
-#$EMAIL_REPORT_TO_GROUPS = @("USS-IT-JHEDs")
+# Overrides $EMAIL_REPORT_TO
+#$EMAIL_REPORT_TO_GROUPS = $null
+#$EMAIL_REPORT_CC = $null
+# Overrides $EMAIL_REPORT_CC
+$EMAIL_REPORT_CC_GROUPS = @("USS-IT-StalePCReports")
 $EMAIL_REPORT_SUBJECT = "Results from Stale PC Cleaner script"
 
 # Path and prefix for the Start-Transcript logfiles.
@@ -428,6 +434,7 @@ if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT)) {
 		try {
 			$excludedUsers = Get-ADUsersByGroup $ASSIGNED_USER_GROUPS_EXCLUDE -ADProperties "mail" -Nested -Verbose
 			$excludedUsersCount = ($excludedUsers | Measure).Count
+			Write-Host("[{0}] Collected {1} users to exclude" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $excludedUsersCount)
 		} catch {
 			Write-Error $_
 			$error_count++
@@ -443,12 +450,19 @@ if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
 }
 
 # Get list of excluded computers.
-# These may still be deleted if $Comp_Group_EXCLUDE_Delete is set to true.
+# These may still be deleted if $COMP_GROUP_EXCLUDE_Delete is set to true.
 $excludedComps = $null
 $excludedCompsCount = 0
-if (-not [string]::IsNullOrWhitespace($Comp_Group_EXCLUDE)) {
-	$excludedComps = Get-ADGroupMember $Comp_Group_EXCLUDE -Recursive | where {$_.objectClass -eq "computer"}
-	$excludedCompsCount = ($excludedComps | Measure).Count
+if (-not [string]::IsNullOrWhitespace($COMP_GROUP_EXCLUDE)) {
+	Write-Host("[{0}] Collected excluded computers from group {1}..." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $COMP_GROUP_EXCLUDE)
+	try {
+		$excludedComps = Get-ADGroupMember $COMP_GROUP_EXCLUDE -Recursive | where {$_.objectClass -eq "computer"}
+		$excludedCompsCount = ($excludedComps | Measure).Count
+		Write-Host("[{0}] Collected {1} computers to exclude from group {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $excludedCompsCount, $COMP_GROUP_EXCLUDE)
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
 }
 	
 # Hash table of users to email.
@@ -556,9 +570,9 @@ $comps | ForEach-Object {
 			$onlyDelete = $false
 			# Check if we have any excluded computers. If so, 
 			If ($excludedCompsCount -gt 0 -And $_.DistinguishedName -in $excludedComps.DistinguishedName) {
-				Write-Host("[{0}] Computer [{1}] found in exclusion group [$Comp_Group_EXCLUDE], only deleting if matching criteria (`$Comp_Group_EXCLUDE_Delete set to $Comp_Group_EXCLUDE_Delete)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+				Write-Host("[{0}] Computer [{1}] found in exclusion group [$COMP_GROUP_EXCLUDE], only deleting if matching criteria (`$COMP_GROUP_EXCLUDE_Delete set to $COMP_GROUP_EXCLUDE_Delete)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
 				$contactEmail = $null
-				$onlyDelete = $Comp_Group_EXCLUDE_Delete
+				$onlyDelete = $COMP_GROUP_EXCLUDE_Delete
 			}
 			
 			# If the computer has not already been moved.
@@ -787,19 +801,35 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 		DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 		SmtpServer = $EMAIL_SMTP
 	}
+	Write-Host("-- Email Message --")
+	# Add To field
 	if (($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
 		$users = Get-ADUsersByGroup $EMAIL_REPORT_TO_GROUPS -Properties mail -Nested
 		$emailParams["To"] = $users | Select -ExpandProperty mail -Unique
 	} else {
 		$emailParams["To"] = $EMAIL_REPORT_TO
 	}
+	Write-Host("To: " + ($emailParams["To"] -join ", "))
+	
+	# Add CC field (optional)
+	if (($EMAIL_REPORT_CC_GROUPS | Measure).Count -gt 0) {
+		$users = Get-ADUsersByGroup $EMAIL_REPORT_CC_GROUPS -Properties mail -Nested
+		$emailParams["CC"] = $users | Select -ExpandProperty mail -Unique
+	} elseif (($EMAIL_REPORT_CC | Measure).Count -gt 0) {
+		$emailParams["CC"] = $EMAIL_REPORT_CC 
+	}
+	if ($emailParams["CC"] -ne $null) {
+		Write-Host("CC: " + ($emailParams["CC"] -join ", "))
+	}
+	
 	$emailParams["Body"] = @"
 <p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$VIPuser_contact_count] VIPs). Failed to email [$failed_email_count] users. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
 
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
 "@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
-
 	Write-Host($emailParams.Body)
+	Write-Host("-- End Email Message --")
+	
 	Send-MailMessage @emailParams -BodyAsHtml
 }
 
