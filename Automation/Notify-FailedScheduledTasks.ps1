@@ -44,9 +44,19 @@ $IGNORE_TASK_NAMES = @("USS-NotifyFailedTasks-Daily", "USS-NotifyFailedTasks")
 
 $EMAIL_SMTP = 'smtp.johnshopkins.edu'
 $EMAIL_REPORT_FROM = 'USS IT Services <ussitservices@jhu.edu>'
-$EMAIL_REPORT_TO = @('mcarras8@jhu.edu','ussitservices@jhu.edu')
-#$EMAIL_REPORT_TO_GROUP = @()
+# Can be sent to either an array of emails or the members of a single AD group.
+$EMAIL_REPORT_TO = @('ussitservices@jhu.edu','USS-IT-onCall@exchange.johnshopkins.edu')
+#$EMAIL_REPORT_TO_GROUP = ""
+#$EMAIL_REPORT_CC = @('USS-IT-onCall@exchange.johnshopkins.edu')
+#$EMAIL_REPORT_CC_GROUP = "USS-IT-onCall"
 # -- END CONFIGURATION --
+
+# Always ignore these non-error codes.
+# This effectively acts like -SuccessCodes but can't be overriden by it.
+# 267008 - Task is ready to run at next scheduled time (should never get this)
+# 267009 - Task is currently running
+# 267011 - Task has not run yet (should never get this)
+$IGNORE_RESULT_CODES = @(267008,267009,267011)
 
 Start-Transcript -Path ".\Logs\Notify-FailedScheduledTasks.log" -Force | Out-Null
 
@@ -55,7 +65,7 @@ $_scriptName = split-path $PSCommandPath -Leaf
 $failedTasks = Get-ScheduledTask -TaskPath $TASK_PATH | 
 	where {$_.State -ne "Disabled" -And $_.TaskName -notin $IGNORE_TASK_NAMES} | 
 	Get-ScheduledTaskInfo | 
-	where {$_.LastRunTime -gt (Get-Date).AddMinutes(-$LastMinutes) -And $_.LastTaskResult -notin $SuccessCodes}
+	where {$_.LastRunTime -gt (Get-Date).AddMinutes(-$LastMinutes) -And $_.LastTaskResult -notin $SuccessCodes -And $_.LastTaskResult -notin $IGNORE_RESULT_CODES}
 
 $failedTaskCount = ($failedTasks | Measure).Count
 if ($failedTaskCount -gt 0) { 
@@ -90,24 +100,30 @@ if ($failedTaskCount -gt 0) {
 </html>
 "@ -f ($SuccessCodes -join ",")
 	
-	if (-Not [string]::IsNullOrEmpty($EMAIL_REPORT_TO_GROUP)) {
-		Import-Module ActiveDirectory
-		$emailTo = Get-ADGroupMember $EMAIL_REPORT_TO_GROUP -Recursive -ErrorAction Stop | % { Get-ADUser $_.distinguishedname -Properties mail } | Select -Unique -ExpandProperty mail
-	} else {
-		$emailTo = $EMAIL_REPORT_TO
-	}
-	
 	$emailParams = @{
 		From = $EMAIL_REPORT_FROM
-		To = $emailTo
 		Subject = $EmailSubject
 		Body = $msgHTML
 		Priority = "High"
 		DeliveryNotificationOption = @("OnSuccess", "OnFailure")
 		SmtpServer = $EMAIL_SMTP
 	}
+	
+	if (-Not [string]::IsNullOrEmpty($EMAIL_REPORT_TO_GROUP)) {
+		Import-Module ActiveDirectory
+		$emailParams.To = Get-ADGroupMember $EMAIL_REPORT_TO_GROUP -Recursive -ErrorAction Stop | % { Get-ADUser $_.distinguishedname -Properties mail } | Select -Unique -ExpandProperty mail
+	} else {
+		$emailParams.To = $EMAIL_REPORT_TO
+	}
+	
+	if (-Not [string]::IsNullOrEmpty($EMAIL_REPORT_CC_GROUP)) {
+		Import-Module ActiveDirectory
+		$emailParams.CC = Get-ADGroupMember $EMAIL_REPORT_CC_GROUP -Recursive -ErrorAction Stop | % { Get-ADUser $_.distinguishedname -Properties mail } | Select -Unique -ExpandProperty mail
+	} elseif ($EMAIL_REPORT_CC -is [array]) {
+		$emailParams.CC = $EMAIL_REPORT_CC
+	}
 
-	Write-Host ("Emailing [{0}]" -f $emailTo -join ";")
+	Write-Host ("Emailing [{0}] with CC [{1}]" -f $emailParams.To -join ";", $emailParams.CC -join ';')
 	Write-Host $msgHTML
 	
 	Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
