@@ -17,6 +17,9 @@
 	.PARAMETER ExactMatch
 	Only accept exact matches for the given software and publisher.
 	
+	.PARAMETER Regex
+	Treat SoftwareName and Publisher as regex patterns. Overriden by -ExactMatch switch.
+	
 	.PARAMETER Parameters
 	Optional parameters added to what's given to the installer. Note if it's an EXE that's not MsiExec, it will assume an InstallShield with default additional parameters of "-uninst","-s". Use -OverrideParameters if you need to override these.
 	
@@ -51,6 +54,7 @@
 	Author: mcarras8
 	
 	Changelog
+	01-09-2026 - mcarras8 - Strings used with -match are now properly escaped, added new parameter -Regex to override this behavior
 	12-23-2025 - mcarras8 - Minor tweaks
 	04-15-2025 - mcarras8 - Added support for QuietUninstallString. 
 						  - Added support for passing exit codes.
@@ -67,6 +71,8 @@ param(
 	[string] $Version,
 
 	[switch] $ExactMatch,
+	
+	[switch] $Regex,
 	
 	[string[]] $Parameters,
 	
@@ -85,11 +91,19 @@ param(
 
 $_scriptName = split-path $PSCommandPath -Leaf
 
+# Escape given strings unless we're using -ExactMatch or -Regex switches
+$_displayname = $SoftwareName
+$_publisher = $Publisher
+if (-Not $ExactMatch -And -Not $Regex) {
+	$_displayname = [Regex]::Escape($_displayname)
+	$_publisher = [Regex]::Escape($_publisher)
+}
+
 # Check 32-bit, then 64-bit registry nodes.
 $installLocation = $null
 $uninstallString = $null
 $hasQuietUninstallParams = $false
-$installKey = gci "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
+$installKey = gci "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ( $ExactMatch -And $_.DisplayName -eq $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -eq $_publisher ) ) -Or ( -Not $ExactMatch -And $_ -match $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -match $_publisher ) ) -And ( [string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version ) }
 if ($installKey) {
 	If (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'InstallLocation'} | Measure).Count -gt 0) {
 		$installLocation = $installKey | Select InstallLocation | Select -ExpandProperty InstallLocation
@@ -101,9 +115,9 @@ if ($installKey) {
 		$uninstallString = $installKey | Select UninstallString | Select -ExpandProperty UninstallString
 	}
 }
-# Check 32-bit registry
+# Check 64-bit registry
 if ([string]::IsNullOrWhitespace($uninstallString)) {
-	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
+	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ( $ExactMatch -And $_.DisplayName -eq $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -eq $_publisher ) ) -Or ( -Not $ExactMatch -And $_ -match $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -match $_publisher ) ) -And ( [string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version ) }
 	if ($installKey) {
 		If (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'InstallLocation'} | Measure).Count -gt 0) {
 			$installLocation = $installKey | Select InstallLocation | Select -ExpandProperty InstallLocation
