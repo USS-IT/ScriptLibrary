@@ -17,6 +17,9 @@
 	.PARAMETER ExactMatch
 	Only accept exact matches for the given software and publisher.
 	
+	.PARAMETER Regex
+	Treat SoftwareName and Publisher as regex patterns. Overriden by -ExactMatch switch.
+	
 	.PARAMETER Parameters
 	Optional parameters added to what's given to the installer. Note if it's an EXE that's not MsiExec, it will assume an InstallShield with default additional parameters of "-uninst","-s". Use -OverrideParameters if you need to override these.
 	
@@ -49,9 +52,10 @@
 	Make sure to test the uninstall outside of SCCM in case there's an uncaught prompt. If you still see a prompt, call the script using -OutputOnly to see what the parameters are. Then try opening up an admin command prompt and use common parameters like "setup.exe -?" or "setup.exe /?" to see if it displays a list of parameters (where setup.exe is the uninstaller filename). If that doesn't work, check online for any documentation on the uninstaller.
 
 	Author: mcarras8
-	Version: 1.2
 	
 	Changelog
+	01-09-2026 - mcarras8 - Strings used with -match are now properly escaped, added new parameter -Regex to override this behavior
+	12-23-2025 - mcarras8 - Minor tweaks
 	04-15-2025 - mcarras8 - Added support for QuietUninstallString. 
 						  - Added support for passing exit codes.
 						  - Script will now give a non-zero exit code if the install key still exists after the uninstall attempt.
@@ -67,6 +71,8 @@ param(
 	[string] $Version,
 
 	[switch] $ExactMatch,
+	
+	[switch] $Regex,
 	
 	[string[]] $Parameters,
 	
@@ -85,26 +91,43 @@ param(
 
 $_scriptName = split-path $PSCommandPath -Leaf
 
+# Escape given strings unless we're using -ExactMatch or -Regex switches
+$_displayname = $SoftwareName
+$_publisher = $Publisher
+if (-Not $ExactMatch -And -Not $Regex) {
+	$_displayname = [Regex]::Escape($_displayname)
+	$_publisher = [Regex]::Escape($_publisher)
+}
+
 # Check 32-bit, then 64-bit registry nodes.
 $installLocation = $null
 $uninstallString = $null
 $hasQuietUninstallParams = $false
-$installKey = gci "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
-$installLocation = $installKey | Select -ExpandProperty InstallLocation
-if (-Not [string]::IsNullOrWhitespace($installKey.QuietUninstallString)) {
-	$uninstallString = $installKey | Select -ExpandProperty QuietUninstallString
-	$hasQuietUninstallParams = $true
-} else {
-	$uninstallString = $installKey | Select -ExpandProperty UninstallString
-}
-if ([string]::IsNullOrWhitespace($uninstallString)) {
-	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { (($ExactMatch -And $_.DisplayName -eq $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -eq $Publisher)) -Or (-Not $ExactMatch -And $_ -match $SoftwareName -And ([string]::IsNullOrEmpty($Publisher) -Or $_.Publisher -match $Publisher))) -And ([string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version) }
-	$installLocation = $installKey | Select -ExpandProperty InstallLocation
-	if (-Not [string]::IsNullOrWhitespace($installKey.QuietUninstallString)) {
-		$uninstallString = $installKey | Select -ExpandProperty QuietUninstallString
+$installKey = gci "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ( $ExactMatch -And $_.DisplayName -eq $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -eq $_publisher ) ) -Or ( -Not $ExactMatch -And $_ -match $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -match $_publisher ) ) -And ( [string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version ) }
+if ($installKey) {
+	If (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'InstallLocation'} | Measure).Count -gt 0) {
+		$installLocation = $installKey | Select InstallLocation | Select -ExpandProperty InstallLocation
+	}
+	if (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'QuietUninstallString'} | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($installKey | Select -ExpandProperty QuietUninstallString))) {
+		$uninstallString = $installKey | Select QuietUninstallString | Select -ExpandProperty QuietUninstallString
 		$hasQuietUninstallParams = $true
-	} else {
-		$uninstallString = $installKey | Select -ExpandProperty UninstallString
+	} elseif (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'UninstallString'} | Measure).Count -gt 0) {
+		$uninstallString = $installKey | Select UninstallString | Select -ExpandProperty UninstallString
+	}
+}
+# Check 64-bit registry
+if ([string]::IsNullOrWhitespace($uninstallString)) {
+	$installKey = gci "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" | foreach { gp $_.PSPath } | ? { ( $ExactMatch -And $_.DisplayName -eq $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -eq $_publisher ) ) -Or ( -Not $ExactMatch -And $_ -match $_displayname -And ( [string]::IsNullOrEmpty($_publisher) -Or $_.Publisher -match $_publisher ) ) -And ( [string]::IsNullOrEmpty($Version) -Or $_.DisplayVersion -eq $Version ) }
+	if ($installKey) {
+		If (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'InstallLocation'} | Measure).Count -gt 0) {
+			$installLocation = $installKey | Select InstallLocation | Select -ExpandProperty InstallLocation
+		}
+		if (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'QuietUninstallString'} | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($installKey | Select -ExpandProperty QuietUninstallString))) {
+			$uninstallString = $installKey | Select QuietUninstallString | Select -ExpandProperty QuietUninstallString
+			$hasQuietUninstallParams = $true
+		} elseif (($installKey | Get-Member -Type NoteProperty | ? {$_.Name -eq 'UninstallString'} | Measure).Count -gt 0) {
+			$uninstallString = $installKey | Select UninstallString | Select -ExpandProperty UninstallString
+		}
 	}
 }
 
@@ -213,7 +236,14 @@ If (-Not $OutputOnly) {
 		}
 	}
 	
-	# Check to see if the registry key is gone.
+	# Check to see if the registry key is gone, waiting up to 5 minutes.
+	$maxSleepTime = 300
+	$sleepTime = 10
+	$counter = 0
+	while ((Test-Path $installKey.PsPath) -And $counter -le $maxSleepTime) {
+		Start-Sleep $sleepTime
+		$counter += $sleepTime
+	}
 	if (Test-Path $installKey.PsPath) {
 		Write-Error "Install key still exists after uninstallation attempt: $($installKey.PSPath)"
 		exit 4
