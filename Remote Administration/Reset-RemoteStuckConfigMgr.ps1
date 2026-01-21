@@ -3,59 +3,85 @@
 	Resets failed program / TS stuck installing on a remote or local computer. Also allows restarting ConfigMgr service.
 	
 	.DESCRIPTION
-	Resets failed program / TS stuck installing on a remote or local computer. Lists all requests found with CompletionState = 'Failure'. If none are in the correct stalled state, gives choice to try restarting the Config Mgr service anyway.
+	Resets failed program / TS stuck installing on a remote or local computer. Lists all requests found with CompletionState = 'Failure'. If none are in the correct stalled state, gives choice to reset deployment policy and/or try restarting the Config Mgr service anyway.
+	
+	.PARAMETER ComputerName
+	The name of the remote or local computer.
 	
 	.NOTES
 	Once the request is deleted it may show up as either "Failed" or "Installed" under Available or Installation Status. Even if it says "Installed" it's probably not actually installed if the request needed to be deleted.
 	
-	If running locally, give the local computer name.
+	If running locally, give the local computer name. Has additional options when running locally.
+	
+	Must be run as a user that has local admin privileges on the target machine (e.g., your local admin SC account).
 	
 	Created: 8-27-25
-	Author: mcarras8
+	Author: Matt Carras (mcarras8)
 #>
+param(
+	[Parameter(Mandatory=$true)]
+	[string]$ComputerName
+)
 
-$comp = Read-Host "Enter computer name"
-$ignoreState = Read-Host "Reset all failed tasks (regardless of state) (N/Y)"
-
-if ([string]::IsNullOrWhitespace($comp)) {
-	Write-Error "Missing or invalid computer name [$comp]"
+if ([string]::IsNullOrWhitespace($ComputerName)) {
+	Write-Error "Missing or invalid computer name [$ComputerName]"
 } else {
-	If((Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet) -Or (Test-Connection -ComputerName $comp -Count 1 -Quiet)) {
-		Write-Host "[$comp] appears to be online, querying..."
+	if ($ComputerName -eq ${ENV:COMPUTERNAME}) {
+		Write-Host "[$ComputerName] appears to be the local machine"
+		$doPingSuccessContinue = "Y"
+	} elseif((Test-Connection -ComputerName $ComputerName -Count 1 -Quiet) -Or (Test-Connection -ComputerName $ComputerName -Count 1 -Quiet) -Or (Test-Connection -ComputerName $ComputerName -Count 1 -Quiet)) {
+		Write-Host "[$ComputerName] appears to be online, querying..."
+		$doPingSuccessContinue = "Y"
 	} else {
-		Write-Warning "[$comp] did not respond to any ping attempts, querying anyway..."
+		$doPingSuccessContinue = Read-Host "[$ComputerName] did not respond to any ping attempts, continue? (N/Y)"
 	}
 	
-	$doRestartService = $false
-
-	# Use WMI to check for all requests
-	# CCM_ExecutionRequestEx should also include CCM_TSExecutionRequest
-	$results=(gwmi -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -Filter "CompletionState = 'Failure'" -ComputerName $comp)
-	if (($results | Measure).Count -le 0) {
-		Write-Host "** No failed requests found on [$comp]"
-		$doRestartService = (Read-Host "Try restarting ConfigMgr service anyway? (N/Y)") -eq "Y"
-	} else {
-		# Output results
-		$results | Select ContentID, ProgramID, @{N="IsTS"; Expression={ $_.__CLASS -eq "CCM_TSExecutionRequest"}}, @{N="ReceivedTime"; Expression={[System.Management.ManagementDateTimeConverter]::ToDateTime($_.ReceivedTime)}}, RunningState, State, CompletionState | ft
-		foreach($owmi in $results) {
-			$cid = $owmi.ContentID
-			# Open requests that are still pending with State 'Completed' are most likely stuck
-			if ($owmi.State -eq 'Completed' -Or $ignoreState -eq "Y") {
-				$owmi.Delete()
-				Write-Host "** Deleting stalled request [$cid] on [$comp]..."
-				$doRestartService = $true
+	if ($doPingSuccessContinue -eq "Y") {
+		# Use WMI to check for all requests
+		# CCM_ExecutionRequestEx should also include CCM_TSExecutionRequest
+		$results=(gwmi -ComputerName $ComputerName -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -Filter "CompletionState = 'Failure'")
+		if (($results | Measure).Count -le 0) {
+			Write-Host "** No failed requests found on [$ComputerName]"
+		} else {
+			Write-Host "** Possible failed requests found on [$ComputerName]"
+			# Output results
+			$results | Select ContentID, ProgramID, @{N="IsTS"; Expression={ $_.__CLASS -eq "CCM_TSExecutionRequest"}}, @{N="ReceivedTime"; Expression={[System.Management.ManagementDateTimeConverter]::ToDateTime($_.ReceivedTime)}}, RunningState, State, CompletionState | ft
+			$ignoreState = Read-Host "Reset all failed tasks regardless of completed state? (N/Y)"
+			foreach($owmi in $results) {
+				$cid = $owmi.ContentID
+				# Open requests that are still pending with State 'Completed' are most likely stuck
+				if ($owmi.State -eq 'Completed' -Or $ignoreState -eq "Y") {
+					$owmi.Delete()
+					Write-Host "** Deleting stalled request [$cid] on [$ComputerName]..."
+					$doRestartService = $true
+				}
 			}
 		}
-	}
-	# Restart the ccmexec service if needed
-	if ($doRestartService) {
-		Write-Host "** Restarting ccmexec service on [$comp]..."
-		$osvc = Get-Service -Name "ccmexec" -ComputerName $comp
-		if ($osvc) {
-			Restart-Service -InputObj $osvc -Force
+		
+		# Offer to reset policy, but only when run locally
+		# https://learn.microsoft.com/en-us/answers/questions/123991/sccm-software-center-how-to-reset-or-cancel-an-app
+		if ( $ComputerName -eq ${ENV:COMPUTERNAME} -And (Read-Host "Try resetting policy and restart the service to clear stuck deployments? (N/Y)") -eq "Y" ) {
+			Invoke-CimMethod -ComputerName $ComputerName -Namespace root\ccm -ClassName SMS_Client -MethodName ResetPolicy -Arguments @{ uFlags = [uint32]1 }
+			$doRestartService = $true
+		} else {
+			$doRestartService = (Read-Host "Try restarting ConfigMgr service and re-evaluate policy anyway? (N/Y)") -eq "Y"
 		}
-	} else {
-		Write-Host "** No results match criteria, nothing to do"
+			
+		# Restart the ccmexec service if needed
+		if ($doRestartService) {
+			Write-Host "** Restarting ccmexec service on [$ComputerName]..."
+			$osvc = Get-Service -Name "ccmexec" -ComputerName $ComputerName
+			if ($osvc) {
+				Restart-Service -InputObj $osvc -Force
+			}
+			# Notify client to re-evaluate policy
+			Write-Host "** Notifying [$ComputerName] to re-evaluate assignments"
+			Invoke-WmiMethod -ComputerName $ComputerName -Namespace root\ccm -Class SMS_Client -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000021}"
+			Write-Host "** Notifying [$ComputerName] to re-evaluate machine policy"
+			Invoke-WmiMethod -ComputerName $ComputerName -Namespace root\ccm -Class SMS_Client -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000022}"
+		} else {
+			Write-Host "** No results match criteria, nothing to do"
+		}
 	}
 }
 
