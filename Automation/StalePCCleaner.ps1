@@ -8,14 +8,28 @@
 	.PARAMETER DryRun
 	Only output/log results. Do not make any changes or send any emails (-WhatIf).
 	
-	.PARAMETER Verbose
-	Enable additional verbose/debugging output.
+	.PARAMETER DisableWarningEmail
+	Do not send any warning emails to end-users for inactive systems.
+	
+	.PARAMETER WarningDays
+	Number of days prior to current date which will result in end-users getting a warning email. Default: 30+ days stale
+	
+	.PARAMETER RetirementDays
+	Number of days prior to current date which will result in system getting disabled from AD. Default: 90+ days stale
+	
+	.PARAMETER DeletionDays
+	Number of days prior to current date which will result in system getting deleted from AD. Default: 180+ days stale
+	
+	.PARAMETER LogLevel
+	Level of verbose console output. Give greater than 0 for more output.
 	
 	.NOTES
 	Requirements:
 	* RSAT AD Tools
 	
-	Logs saved to .\Logs\stalepccleaner-<date>.log
+	To run on-demand, use the "Days" parameters to tweak the various thresholds. Make sure to use -DryRun to check the actions the script would perform. Use -DisableWarningEmail if you want to avoid sending out extra warning emails to end-users for each on-demand run and aren't using -DryRun.
+	
+	Saves LAPS PW in exported logs in case it's needed.
 	
 	Authors:
 	Daniel Anderson - dander83@jhu.edu
@@ -23,6 +37,10 @@
 	Matthew Carras - mcarras8@jhu.edu
 	
 	Changelog
+	04-15-26 - mcarras8 - Fixed blank model. Added support for excluding emailing users. Added -LogLevel switch. Changes to emailed report.
+	02-10-26 - mcarras8 - Slight change to result email, skipped email for deleted computers, fix asset tag in emails
+	12-23-25 - mcarras8 - Moved thresholds to parameters, added support for saving LAPS PW, changed -DryRun output
+	12-19-25 - mcarras8 - Added -DisableWarningEmail parameter
 	11-03-25 - mcarras8 - Fixed typos. Added CC to report email.
 	08-19-25 - mcarras8 - Minor tweaks
 	07-21-25 - mcarras8 - Retry failed emails, show model info in email, additional logging
@@ -34,33 +52,40 @@
 #>
 param(
 	[Parameter(Mandatory=$false)]
-	[switch]$DryRun
+	[switch]$DryRun,
+	
+	[Parameter(Mandatory=$false)]
+	[switch]$DisableWarningEmail,
+	
+	[Parameter(Mandatory=$false)]
+	[int]$WarningDays = 30,
+	
+	[Parameter(Mandatory=$false)]
+	[int]$RetirementDays = 90,
+	
+	[Parameter(Mandatory=$false)]
+	[int]$DeletionDays = 180,
+	
+	[Parameter(Mandatory=$false)]
+	[int]$LogLevel = 0
 )
 
 #Import AD module for earlier versions of PowerShell
 Import-Module ActiveDirectory
 
 # -- START CONFIGURATION --
-# Dates to check LastLogonDate against.
-# Change the value after AddDays to customize the timeframes
-# Date threshold to warn assigned users of possible pending action
-$DATE_WARNING = (Get-Date).AddDays(-30)
-# Date threshold to move system to retirement OU
-# If system is already in retirement OU, it will be disabled instead
-$DATE_RETIREMENT = (Get-Date).AddDays(-90)
-# Date threshold to delete system out of AD entirely
-# If not set or $null this action will always be skipped
-$DATE_REMOVAL = (Get-Date).AddDays(-180)
-
-# Set the attribute synced from SOR for computer assignment.
-# This field will be emailed if they are past $warningDays inactive.
-$PROP_ASSIGNMENT = "extensionAttribute2"
-# AD attribute for system form factor (Laptop, Desktop, etc.)
-$PROP_FORMFACTOR = "extensionAttribute5"
-# AD attribute for asset tag
-$PROP_ASSETTAG = "extensionAttribute1"
-# AD attribute for model
-$PROP_MODEL = "extensionAttribute7"
+# Additional properties we need from AD.
+$COMP_PROPS = @{
+	# If given, save the current LAPS password in the export. Set to null or empty to skip.
+	"LAPSPW" = "ms-Mcs-AdmPwd"
+	# Set the attribute synced from SOR for computer assignment.
+	# This field will be emailed if they are past $warningDays inactive.
+	"Assignment" = "extensionAttribute2"
+	# Additional attributes synced from SOR. Used in the email sent to the user and reports.
+	"FormFactor" = "extensionAttribute5"
+	"AssetTag" = "extensionAttribute1"
+	"Model" = "extensionAttribute7"
+}
 
 # The OU containing all contactable users.
 $OU_USER = "OU=PEOPLE,DC=win,DC=ad,DC=jhu,DC=edu"
@@ -72,13 +97,15 @@ $OU_RETIREMENT = 'OU=USS-Retired,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu'
 # List of OUs to exclude from processing.
 $OU_EXCLUDE = @('OU=USS-VPS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-DMG,OU=USS-DMC,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu','OU=USS-STARS,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu')
 # Computers in this group will also be excluded.
-$COMP_GROUP_EXCLUDE = 'USS-StalePCExceptionComps'
+$COMP_GROUP_EXCLUDE = 'USS-StalePCExcludeComps'
 # If true, still delete the systems in $COMP_GROUP_EXCLUDE after $DATE_REMOVAL has passed.
 $COMP_GROUP_EXCLUDE_Delete = $true
-# Computers assigned to users in this group will also be excluded. Requires $PROP_ASSIGNMENT to be set and valid.
-$ASSIGNED_USER_GROUPS_EXCLUDE = @("USS-VIP")
+# Computers assigned to users in this group will also be excluded. Requires $COMP_PROPS.Assignment to be set and valid.
+$ASSIGNED_USER_GROUP_EXCLUDE = 'USS-StalePCExcludeUsers'
 # If set, still email assigned users of excluded systems.
 $EMAIL_EXCLUDED_SYSTEMS = $true
+# Users in this group will not be emailed. Requires $COMP_PROPS.Assignment to be set and valid.
+$ASSIGNED_USER_GROUP_EMAIL_EXCLUDE = 'USS-StalePCExcludeEmailUsers'
 # Users in the these groups will be marked as "VIP" in reports.
 $VIP_USER_GROUPS = @("USS-VIP")
 
@@ -91,7 +118,7 @@ $CONTACTUSER_MAPPING_FALLBACK_FP = "ContactMappingFallback.csv"
 # Location and filename for storing CSV results
 $CSV_RESULTS_PATH = "\\win.ad.jhu.edu\cloud\HSA$\ITServices\Reports\StalePCs"
 $CSV_RESULTS_FP = "$CSV_RESULTS_PATH\StalePCs-{0}.csv" -f (Get-Date -format 'MM-dd-yyyy')
-$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","VIP","FormFactor","AssetTag")
+$CSV_HEADER = @("Name","LastLogonDate","PingResult","Action","AssignedUser","Emailed","VIP","FormFactor","AssetTag","LAPS PW")
 
 # Automated email settings.
 $EMAIL_ASSIGNEDUSER = $true
@@ -134,6 +161,17 @@ $LOGFILE_PREFIX = "stalepccleaner"
 # Maximum number of days before rotating logfile.
 $LOGFILE_ROTATE_DAYS = 90
 # -- END CONFIGURATION --
+
+# Dates to check LastLogonDate against. These are set in the parameters.
+# Change the value after AddDays to customize the timeframes
+# Date threshold to warn assigned users of possible pending action
+$DATE_WARNING = (Get-Date).AddDays((-1 * $WarningDays))
+# Date threshold to move system to retirement OU
+# If system is already in retirement OU, it will be disabled instead
+$DATE_RETIREMENT = (Get-Date).AddDays((-1 * $RetirementDays))
+# Date threshold to delete system out of AD entirely
+# If not set or $null this action will always be skipped
+$DATE_REMOVAL = (Get-Date).AddDays((-1 * $DeletionDays))
 
 # -- FUNCTION START --
 $_ADUSERS=@{}
@@ -416,23 +454,19 @@ if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
 	}
 }
 
-# Scan Computers OU (SearchBase) for systems that have not been logged in since $warningDays.
-# First ping the computers up to 3 times. If any pass, skip all other checks.
-# Computers with LastLogonDate older than $DATE_RETIREMENT will be moved to the Retired OU if they haven't already.
-# If they are already in the Retired OU, they will be disabled.
-# If they are already disabled, and if $DATE_REMOVAL is set, they will be deleted out of AD.
-
-# Compute assigned users excluded from processing.
+# Add assignment to AD properties.
+# Compute assigned users excluded from processing and/or email.
 $excludedUsers = $null
 $excludedUsersCount = 0
+$excludedEmailUsers = $null
+$excludedEmailUsersCount = 0
 $props = @("Name","LastLogonDate")
-if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT)) {
-	$props += @($PROP_ASSIGNMENT)
+if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['Assignment'])) {
 	# If we also have groups to exclude
-	if (($ASSIGNED_USER_GROUPS_EXCLUDE | Measure).Count -gt 0) {
-		Write-Host("[{0}] Collecting excluded users from groups: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($ASSIGNED_USER_GROUPS_EXCLUDE -join ", "))
+	if (-Not [string]::IsNullOrWhitespace($ASSIGNED_USER_GROUP_EXCLUDE)) {
+		Write-Host("[{0}] Collecting excluded users from group: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ASSIGNED_USER_GROUP_EXCLUDE)
 		try {
-			$excludedUsers = Get-ADUsersByGroup $ASSIGNED_USER_GROUPS_EXCLUDE -ADProperties "mail" -Nested -Verbose
+			$excludedUsers = Get-ADUsersByGroup $ASSIGNED_USER_GROUP_EXCLUDE -ADProperties "mail" -Nested -Verbose
 			$excludedUsersCount = ($excludedUsers | Measure).Count
 			Write-Host("[{0}] Collected {1} users to exclude" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $excludedUsersCount)
 		} catch {
@@ -440,13 +474,24 @@ if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT)) {
 			$error_count++
 		}
 	}
+	if (-Not [string]::IsNullOrWhitespace($ASSIGNED_USER_GROUP_EMAIL_EXCLUDE)) {
+		Write-Host("[{0}] Collecting users excluded from being emailed from group: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $ASSIGNED_USER_GROUP_EMAIL_EXCLUDE)
+		try {
+			$excludedEmailUsers = Get-ADUsersByGroup $ASSIGNED_USER_GROUP_EMAIL_EXCLUDE -ADProperties "mail" -Nested -Verbose
+			$excludedEmailUsersCount = ($excludedEmailUsers | Measure).Count
+			Write-Host("[{0}] Collected {1} users to exclude from emails" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $excludedEmailUsersCount)
+		} catch {
+			Write-Error $_
+			$error_count++
+		}
+	}
 }
+
 # Compute additional properties for Get-ADComputer.
-if (-Not [string]::IsNullOrWhitespace($PROP_ASSETTAG)) {
-	$props += @($PROP_ASSETTAG)
-}
-if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
-	$props += @($PROP_FORMFACTOR)
+foreach ($item in $COMP_PROPS.GetEnumerator()) {
+	if (-Not [string]::IsNullOrWhitespace($item.Value)) {
+		$props += @($item.Value)
+	}
 }
 
 # Get list of excluded computers.
@@ -464,13 +509,24 @@ if (-not [string]::IsNullOrWhitespace($COMP_GROUP_EXCLUDE)) {
 		$error_count++
 	}
 }
+
+# Scan Computers OU (SearchBase) for systems that have not been logged in since $warningDays.
+# First ping the computers up to 3 times. If any pass, skip all other checks.
+# Computers with LastLogonDate older than $DATE_RETIREMENT will be moved to the Retired OU if they haven't already.
+# If they are already in the Retired OU, they will be disabled.
+# If they are already disabled, and if $DATE_REMOVAL is set, they will be deleted out of AD.
 	
 # Hash table of users to email.
 $contactUserSystems = @{}
 # Hash table of systems to add messages for.
 $logSystems = @{}
+# Stats
+$movedSystemCount = 0
+$disabledSystemCount = 0
+$deletedSystemCount = 0
+# Grab the systems.
 $comps = Get-ADComputer -Property $props -Filter * -SearchBase $OU_COMPUTERS | where {$_.LastLogonDate -isnot [datetime] -Or $_.LastLogonDate -lt $DATE_WARNING}
-Write-Host("[{0}] Collected {1} computers from AD" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count)
+Write-Host("[{0}] Collected {1} computers from AD matching criteria" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($comps | Measure).Count)
 $comps | ForEach-Object {
 	# Get the OU from the DistinguishedName
 	$ou = $null
@@ -482,6 +538,7 @@ $comps | ForEach-Object {
 	$actionTaken = ""
 	$contactEmail = $null
 	$assignedUser = $null
+	$lapsPW = ""
 	# Attempt to ping the system up to 3 times.
 	# If it responds, stop all other processing.
 	if (((Test-Connection $_.name -Count 1 -ErrorAction SilentlyContinue) -Or 
@@ -489,14 +546,15 @@ $comps | ForEach-Object {
 		(Test-Connection $_.name -Count 1 -ErrorAction SilentlyContinue))) {
 		Write-Host("[{0}] Ping success for {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name)
 		$pingResult = "Success"
+		Write-Host("[{0}] Ping success from {1}, no further action" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name)
 	} Else {
 		$pingResult = "Fail"
 		Write-Host("[{0}] No ping response from {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name)
 		
 		$skipProcessing = $false
 		# Get contact email and check if assigned user is excluded from processing.
-		if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT) -And $_.$PROP_ASSIGNMENT -ne $null) {
-			$assignedUser = $_.$PROP_ASSIGNMENT
+		if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['Assignment']) -And $_.($COMP_PROPS['Assignment']) -ne $null) {
+			$assignedUser = $_.($COMP_PROPS['Assignment'])
 			if ($assignedUser -match "@") {
 				try {
 					Write-Host("[{0}] Looking up assigned user [{1}] in AD" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $assignedUser)
@@ -521,7 +579,7 @@ $comps | ForEach-Object {
 					$error_count++
 				}
 			} elseif (-Not [string]::IsNullOrEmpty($assignedUser)) {
-				Write-Host("[{0}] - Has possible departmental user assignment [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $assignedUser)
+				Write-Host("[{0}] - [{1}] has possible departmental user assignment [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.Name, $assignedUser)
 				
 				# Check the fallback mappings for shared systems.
 				# This is mostly for shared systems.
@@ -578,9 +636,18 @@ $comps | ForEach-Object {
 			# If the computer has not already been moved.
 			if ($_.DistinguishedName -notlike "CN=*,$OU_RETIREMENT" -And -Not $onlyDelete) {
 			  try {
-				Write-Host("[{0}] Moving [{1}] to [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName, $OU_RETIREMENT)
+				If ($DryRun) {
+					Write-Host("[{0}] Would move [{1}] to [{2}] (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName, $OU_RETIREMENT)
+				} else {
+					Write-Host("[{0}] Moving [{1}] to [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName, $OU_RETIREMENT)
+				}
 				Move-ADObject $_.DistinguishedName -TargetPath $OU_RETIREMENT -WhatIf:$DryRun
-				$actionTaken = "Moved"
+				if ($DryRun) {
+					$actionTaken = "Pending Move (-DryRun)"
+				} else {
+					$actionTaken = "Moved"
+					$movedSystemCount++
+				}
 			  } catch {
 				  Write-Error $_
 				  $error_count++
@@ -589,9 +656,18 @@ $comps | ForEach-Object {
 				# If computer has already been moved to the Retirement OU.
 				if ($_.Enabled -And -Not $onlyDelete) {
 					try {
-						Write-Host("[{0}] Disabling [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						If ($DryRun) {
+							Write-Host("[{0}] Would disable [{1}] (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						} else {
+							Write-Host("[{0}] Disabling [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						}
 						Disable-ADAccount $_.DistinguishedName -WhatIf:$DryRun
-						$actionTaken = "Disabled"
+						if ($DryRun) {
+							$actionTaken = "Pending Disable (-DryRun)"
+						} else {
+							$actionTaken = "Disabled"
+							$disabledSystemCount++
+						}
 					} catch {
 						Write-Error $_
 						$error_count++
@@ -599,9 +675,22 @@ $comps | ForEach-Object {
 				# If computer has already been disabled and we have $DATE_REMOVAL set.
 				} ElseIf ($DATE_REMOVAL -is [datetime] -And ($_.LastLogonDate -isnot [datetime] -Or $_.LastLogonDate -le $DATE_REMOVAL)) {
 					try {
-						Write-Host("[{0}] DELETING [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						If (-Not [string]::IsNullOrWhitespace($COMP_PROPS['LAPSPW'])) {
+							$lapsPW = $_.($COMP_PROPS['LAPSPW'])
+							Write-Host("[{0}] Saving LAPS PW for [{1}] before deletion" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						}
+						If ($DryRun) {
+							Write-Host("[{0}] Would DELETE [{1}] (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						} else {
+							Write-Host("[{0}] DELETING [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $_.DistinguishedName)
+						}
 						Remove-ADObject $_.DistinguishedName -Confirm:$false -WhatIf:$DryRun
-						$actionTaken = "Deleted"
+						if ($DryRun) {
+							$actionTaken = "Pending Deletion (-DryRun)"
+						} else {
+							$actionTaken = "Deleted"
+							$deletedSystemCount++
+						}
 					} catch {
 						Write-Error $_
 						$error_count++
@@ -621,26 +710,33 @@ $comps | ForEach-Object {
 		Action = $actionTaken
 	}
 	# Add optional attributes.
-	if (-Not [string]::IsNullOrWhitespace($PROP_ASSETTAG)) {
-		# Only add assettag if its numeric.
-		$assettag = $_.$PROP_ASSETTAG
-		$logSystems[$_.Name]["AssetTag"] = $assettag
+	if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['AssetTag'])) {
+		$logSystems[$_.Name]["AssetTag"] = $_.($COMP_PROPS['AssetTag'])
 	}
-	if (-Not [string]::IsNullOrWhitespace($PROP_FORMFACTOR)) {
-		$logSystems[$_.Name]["FormFactor"] = $_.$PROP_FORMFACTOR
+	if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['FormFactor'])) {
+		$logSystems[$_.Name]["FormFactor"] = $_.($COMP_PROPS['FormFactor'])
 	}
-	if (-Not [string]::IsNullOrWhitespace($PROP_MODEL)) {
-		$logSystems[$_.Name]["Model"] = $_.$PROP_MODEL
+	if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['Model'])) {
+		$logSystems[$_.Name]["Model"] = $_.($COMP_PROPS['Model'])
 	}
-	if (-Not [string]::IsNullOrWhitespace($PROP_ASSIGNMENT) -Or $contactEmail -ne $null) {
+	if (-Not [string]::IsNullOrWhitespace($COMP_PROPS['Assignment']) -Or $contactEmail -ne $null) {
 		$logSystems[$_.Name]["ContactEmail"] = $contactEmail
 		$logSystems[$_.Name]["AssignedUser"] = $assignedUser
 		$logSystems[$_.Name]["Emailed"] = ""
 		$logSystems[$_.Name]["VIP"] = ""
+	}	
+	If (-Not [string]::IsNullOrWhitespace($COMP_PROPS['LAPSPW'])) {
+		$logSystems[$_.Name]["LAPS PW"] = $lapsPW
 	}
 
-	# If we have a valid contact email, add to the list of users to email.
-	if ($contactEmail -match "@") {
+	# If we have a valid contact email, and the system hasn't been deleted, add it to the list of users to email.
+	if ($contactEmail -match "@" -And 
+		$actionTaken -ne "Deleted" -And 
+		($excludedEmailUsersCount -gt 0 -And 
+		 (($assignedUser.distinguishedname -And $assignedUser.distinguishedname -in $excludedEmailUsers.distinguishedname) -Or 
+		  (-Not $assignedUser.distinguishedname -And $contactEmail -in $excludedEmailUsers.mail))
+		 )
+	) {
 		Write-Host("[{0}] Adding contact email [{1}] for system [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $contactEmail, $_.Name)
 		if ($contactUserSystems[$contactEmail] -eq $null) {
 			$contactUserSystems[$contactEmail] = @($_.Name)
@@ -658,10 +754,10 @@ $_email_retry_limit = 0
 if ($EMAIL_RETRY_LIMIT -ne $null) {
 	$_email_retry_limit = $EMAIL_RETRY_LIMIT
 }
-if (-Not $EMAIL_ASSIGNEDUSER) {
-	Write-Host("[{0}] Would have [{1}] users to email, however `$EMAIL_ASSIGNEDUSER is set to $EMAIL_ASSIGNEDUSER" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
+if (-Not $EMAIL_ASSIGNEDUSER -Or $DisableWarningEmail) {
+	Write-Host("[{0}] Would have [{1}] users to email, however emailing users is disabled" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $contactUserSystems.Count)
 } else {
-	Write-Host("[{0}] Setting up [{1}] emails" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($contactUserSystems.Keys | Measure).Count)
+	Write-Host("[{0}] Setting up [{1}] emails" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $contactUserSystems.Count)
 	foreach($ht in $contactUserSystems.GetEnumerator()) {
 		$email = $ht.Name
 		$systems = $ht.Value
@@ -679,7 +775,7 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 						$validSystems = $true
 						# If asset tag is not numeric, null it out.
 						$assetTag = $system.AssetTag
-						if ($_.$PROP_ASSETTAG -notmatch "^\d+") {
+						if ($assetTag -notmatch "^\d+") {
 							$assetTag = ""
 						}
 						$msgSystemTable += @"
@@ -702,8 +798,10 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 	</table>
 "@
 
-			Write-Verbose("To: $email")
-			Write-Verbose($msgHTML)
+			if ($LogLevel -gt 0) {
+				Write-Host("To: $email")
+				Write-Host($msgHTML)
+			}
 			
 			# Only send the email if we have at least one valid system.
 			$email_success = $false
@@ -725,10 +823,13 @@ if (-Not $EMAIL_ASSIGNEDUSER) {
 			
 				$email_retry_count=0
 				while($email_retry_count -le $_email_retry_limit -And -Not $email_success) {
-					Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
+					
 					$sleep_secs = $EMAIL_SLEEP_SECS
 					try {
-						if (-Not $DryRun) {
+						if ($DryRun) {
+							Write-Host("[{0}] Would email [{1}] for systems: {2} (-DryRun)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
+						} else {
+							Write-Host("[{0}] Emailing [{1}] for systems: {2}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $email, ($systems -join ", "))
 							Send-MailMessage @emailParams -BodyAsHtml -ErrorAction Stop
 						}
 						$email_success = $true
@@ -793,7 +894,7 @@ if ($logSystemsObj -ne $null) {
 }
 
 # Send a report of results.
-if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
+if (-Not $DryRun -And (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0)) {
 	$emailParams = @{
 		From = $EMAIL_REPORT_FROM
 		Subject = $EMAIL_REPORT_SUBJECT
@@ -804,7 +905,7 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 	Write-Host("-- Email Message --")
 	# Add To field
 	if (($EMAIL_REPORT_TO_GROUPS | Measure).Count -gt 0) {
-		$users = Get-ADUsersByGroup $EMAIL_REPORT_TO_GROUPS -Properties mail -Nested
+		$users = Get-ADUsersByGroup $EMAIL_REPORT_TO_GROUPS -ADProperties mail -Nested
 		$emailParams["To"] = $users | Select -ExpandProperty mail -Unique
 	} else {
 		$emailParams["To"] = $EMAIL_REPORT_TO
@@ -813,7 +914,7 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 	
 	# Add CC field (optional)
 	if (($EMAIL_REPORT_CC_GROUPS | Measure).Count -gt 0) {
-		$users = Get-ADUsersByGroup $EMAIL_REPORT_CC_GROUPS -Properties mail -Nested
+		$users = Get-ADUsersByGroup $EMAIL_REPORT_CC_GROUPS -ADProperties mail -Nested
 		$emailParams["CC"] = $users | Select -ExpandProperty mail -Unique
 	} elseif (($EMAIL_REPORT_CC | Measure).Count -gt 0) {
 		$emailParams["CC"] = $EMAIL_REPORT_CC 
@@ -823,17 +924,23 @@ if (($EMAIL_REPORT_TO | Measure).Count -gt 0 -Or ($EMAIL_REPORT_TO_GROUPS | Meas
 	}
 	
 	$emailParams["Body"] = @"
-<p>Sent [$success_email_count] emails for [{0}] users referencing [{1}] systems (including [$VIPuser_contact_count] VIPs). Failed to email [$failed_email_count] users. Skipped processing [{2}] systems due to exclusions. See [$CSV_RESULTS_FP] for more info.</p>
+Processed {0} inactive systems (excluding {1}) out of {2} total.<br />
+Sent [$success_email_count] emails to [{3}] users (including [$VIPuser_contact_count] VIPs).<br />
+Failed to email [$failed_email_count] users.<br />
+Moved Systems: $movedSystemCount<br />
+Disabled Systems: $disabledSystemCount<br />
+Deleted Systems: $deletedSystemCount<br />
+<p>See [$CSV_RESULTS_FP] for more info on each action taken.</p>
 
 <p>There were [$error_count] caught errors from [$_scriptName] running on [${ENV:COMPUTERNAME}]. See [$_logfilepath] for more details.</p>
-"@ -f ($contactUserSystems.Keys | Measure).Count, ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count
+"@ -f ($logSystemsObj | Measure).Count, ($logSystemsObj | where {$_.Action -match "Skipped"} | Measure).Count, ($comps | Measure).Count, ($contactUserSystems.Keys | Measure).Count
 	Write-Host($emailParams.Body)
 	Write-Host("-- End Email Message --")
 	
 	Send-MailMessage @emailParams -BodyAsHtml
 }
 
-Write-Host("[0] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $errorCount)
+Write-Host("[{0}] Errors encountered: {1}" -f ((Get-Date).toString("yyyy/MM/dd HH:mm:ss")), $error_count)
 
 $runtimeDiff = ((Get-Date) - $dateStart)
 Write-Host("[{0}] Total Runtime: {1} hours {2} minutes ({3} total minutes)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $runtimeDiff.Hours, $runtimeDiff.Minutes, $runtimeDiff.TotalMinutes)
