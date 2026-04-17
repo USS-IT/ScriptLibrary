@@ -11,11 +11,14 @@
 	.PARAMETER Right
 	Required. The right CSV file to join. Values in same named columns are overriden by the Left table by default (see -Conditions).
 	
+	.PARAMETER On
+	Primary key name from both tables to join on. Either -On or -LeftOn and -RightOn are required.
+	
 	.PARAMETER LeftOn
-	Required. Primary key name from the left table to join on.
+	Required with -RightOn. Primary key name from the left table to join on.
 	
 	.PARAMETER RightOn
-	Optional. Primary key name from the right table to join on. If not given, assumes same as LeftOn.
+	Required with -LeftOn. Primary key name from the right table to join on.
 	
 	.PARAMETER JoinType
 	Optional. Either Inner or Outer (return both tables). Default is Outer.
@@ -38,18 +41,26 @@
 	.NOTES
 	Author: Matthew Carras
 #>
-param(
+[CmdletBinding(DefaultParameterSetName='Default')]
+param (
 	[parameter(Mandatory=$true, Position=0)]
-	[string]$Left,
+	[AllowEmptyCollection()]
+	[array]$Left,
 	
 	[parameter(Mandatory=$true, Position=1)]
-	[string]$Right,
+	[AllowEmptyCollection()]
+	[array]$Right,
 	
-	[parameter(Mandatory=$true, Position=2)]
+	[parameter(Mandatory=$true, ParameterSetName='Default')]
+	[ValidateNotNullOrEmpty()] 
+	[string]$On,
+	
+	[parameter(Mandatory=$true, ParameterSetName='LeftRightOn')]
 	[ValidateNotNullOrEmpty()] 
 	[string]$LeftOn,
 	
-	[parameter(Mandatory=$false, Position=3)]
+	[parameter(Mandatory=$true, ParameterSetName='LeftRightOn')]
+	[ValidateNotNullOrEmpty()]
 	[string]$RightOn,
 	
 	[parameter(Mandatory=$false)]
@@ -84,11 +95,14 @@ function Join-Objects {
 	.PARAMETER Right
 	Required. The right object to join. Values in same named columns are overriden by the Left array by default (see -Conditions).
 	
+	.PARAMETER On
+	Primary key name from both tables to join on. Either -On or -LeftOn and -RightOn are required.
+	
 	.PARAMETER LeftOn
-	Required. Primary key name from the left table to join on.
+	Required with -RightOn. Primary key name from the left table to join on.
 	
 	.PARAMETER RightOn
-	Optional. Primary key name from the right table to join on. If not given, assumes same as LeftOn.
+	Required with -LeftOn. Primary key name from the right table to join on.
 	
 	.PARAMETER JoinType
 	Optional. Either Inner or Outer (return both tables). Default is Outer.
@@ -99,7 +113,7 @@ function Join-Objects {
 	.OUTPUTS
 	Joined objects.
 #>
-
+	[CmdletBinding(DefaultParameterSetName='Default')]
 	param (
 		[parameter(Mandatory=$true, Position=0)]
         [AllowEmptyCollection()]
@@ -109,11 +123,16 @@ function Join-Objects {
         [AllowEmptyCollection()]
 		[array]$Right,
 		
-		[parameter(Mandatory=$true, Position=2)]
+		[parameter(Mandatory=$true, ParameterSetName='Default')]
+		[ValidateNotNullOrEmpty()] 
+		[string]$On,
+		
+		[parameter(Mandatory=$true, ParameterSetName='LeftRightOn')]
 		[ValidateNotNullOrEmpty()] 
 		[string]$LeftOn,
 		
-		[parameter(Mandatory=$false, Position=3)]
+		[parameter(Mandatory=$true, ParameterSetName='LeftRightOn')]
+		[ValidateNotNullOrEmpty()]
 		[string]$RightOn,
 		
 		[parameter(Mandatory=$false)]
@@ -127,22 +146,28 @@ function Join-Objects {
 		# Validate columns exist
 		if (($Left | Measure).Count -gt 0) {
 			$leftCols = $Left | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name -Unique
-			if (-Not $LeftOn -in $leftCols) {
+			if (($On -ne $null -And -Not $On -in $leftCols) -Or ($LeftOn -ne $null -And -Not $LeftOn -in $leftCols)) {
 				Throw "Column [$LeftOn] not found in left array"
 			}
 		}
 		if (($Right | Measure).Count -gt 0) {
 			$rightCols = $Right | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name -Unique
-			if (-Not [string]::IsNullOrEmpty($RightOn) -And -Not $RightOn -in ($Right | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name -Unique)) {
+			if (($On -ne $null -And -Not $On -in $rightCols) -Or ($RightOn -ne $null -And -Not $RightOn -in $leftCols)) {
 				Throw "Column [$RightOn] not found in right array"
 			}
 		}
 		
+		# Join the two sets of columns and set the join column
 		$joinedCols = ($leftCols + $rightCols) | Select -Unique
-		if ($LeftOn -ne $RightOn -And -Not [string]::IsNullOrEmpty($RightOn)) {
-			$joinedCols = $joinedCols | where {$_ -ne $RightOn}
+		if (-Not [string]::IsNullOrEmpty($LeftOn)) {
+			if ($LeftOn -ne $RightOn -And -Not [string]::IsNullOrEmpty($RightOn)) {
+				$joinedCols = $joinedCols | where {$_ -ne $RightOn}
+			}
+		
+			$joinOn = $LeftOn
+		} else {
+			$joinOn = $On
 		}
-		$On = $LeftOn
 	}
 	
 	Process {
@@ -164,17 +189,17 @@ function Join-Objects {
 		}
 		
 		# If our primary key column names are different, change the right column name to match
-		if (-Not [string]::IsNullOrEmpty($RightOn) -And $RightOn -ne $LeftOn) {
+		if (-Not [string]::IsNullOrEmpty($LeftOn) -And -Not [string]::IsNullOrEmpty($RightOn) -And $RightOn -ne $LeftOn) {
 			$Right = $Right | Select *,@{N=$LeftOn; Expression={ $_.$RightOn }} -ExcludeProperty $RightOn
 		}
 		
 		# Construct the grouped object
 		$countMap = @{}
-		$results = ($Left + $Right) | where {$JoinType -eq "Outer" -Or $_.$On -ne $null} | Group-Object -Property $On | foreach { 
+		$results = ($Left + $Right) | where {$JoinType -eq "Outer" -Or $_.$joinOn -ne $null} | Group-Object -Property $joinOn | foreach { 
 			if ($_.Count -eq 1) {
 				$countMap[$_.Name] = $_.Count
 				[PSCustomObject]($_.Group | Select -First 1)
-			} elseif ($_.Group[0].$On -ne $null -And $_.Group[1].$On -ne $null) {
+			} elseif ($_.Group[0].$joinOn -ne $null -And $_.Group[1].$joinOn -ne $null) {
 				$countMap[$_.Name] = $_.Count
 				$o = [PSCustomObject]@{ }
 				foreach ($p in $joinedCols) {
@@ -189,7 +214,7 @@ function Join-Objects {
 							$rInt = 1
 						}
 						$val = $_.Group[$lInt].$p
-						# Conditions to use right table's values:
+						# Default conditions to use right table's values:
 						# - If value is null
 						# - or value is an empty string and other entry is not empty
 						# - or value is a newer datetime
@@ -208,7 +233,7 @@ function Join-Objects {
 		# Default is Outer / Full Outer
 		switch($JoinType) {
 			"Inner" {
-				$results = $results | where {$countMap[$_.$On] -gt 1}
+				$results = $results | where {$countMap[$_.$joinOn] -gt 1}
 			}
 		}
 		
