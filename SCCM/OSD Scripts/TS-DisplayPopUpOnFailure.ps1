@@ -58,12 +58,6 @@ try {
 	throw $_
 }
 
-# Set this TSVar to "false" if we want to skip checking internet connectivity.
-$addr = $tsenv.Value("XCheckNetAddress")
-if([string]::IsNullOrWhitespace($addr)) {
-	$addr = "google.com"
-}
-
 if ($NotificationLogPath -notlike '*\*') {
 	$_notificationLogPath = "${logpath}\${NotificationLogPath}"
 } else {
@@ -82,6 +76,11 @@ Select-String -Path $logfile "<\!\[LOG\[(Failed to run the action:[^\]]+)]" -All
 }
 
 # Check for internet connectivity.
+# Set this TSVar to "false" if we want to skip checking internet connectivity.
+$addr = $tsenv.Value("XCheckNetAddress")
+if([string]::IsNullOrWhitespace($addr)) {
+	$addr = "google.com"
+}
 if ($addr -ne "false" -And -Not (
 	(Test-Connection -ComputerName $addr -Count 1 -Quiet) -Or 
 	(Test-Connection -ComputerName $addr -Count 1 -Quiet) -Or 
@@ -94,7 +93,9 @@ if ($addr -ne "false" -And -Not (
 $xosdcompleted = $tsenv.Value("XOSDCompleted")
 $osdstatus = $tsenv.Value("OSDStatus")
 $_smstsinwinpe = $tsenv.Value("_SMSTSInWinPE")
+$xosdruntimestart = $tsenv.Value("XOSDRuntimeStart")
 $systemName = $tsenv.Value("XFinalComputerName")
+
 $xosdrenamesuccess = $tsenv.Value("XOSDRenameSuccess")
 $xosdmovesuccess = $tsenv.Value("XOSDMoveSuccess")
 $XHasTSOSDGUIRun = $tsenv.Value("XHasTSOSDGUIRun")
@@ -107,6 +108,20 @@ $XHasTSPartCompleted = $tsenv.Value("XHasTSPartCompleted")
 $XHasTSNetCompleted = $tsenv.Value("XHasTSNetCompleted")
 $XHasTSSoftwareCompleted = $tsenv.Value("XHasTSSoftwareCompleted")
 $XHasTSPostSetupCompleted = $tsenv.Value("XHasTSPostSetupCompleted")
+
+# Get the current runtime in hours.
+# We use a WebRequest to avoid time syncing issues.
+try {
+	$xosdruntimestart = $xosdruntimestart -as [DateTime]
+	if ($xosdruntimestart -is [DateTime]) {
+		$internetDate = (Invoke-WebRequest -UseBasicParsing -Uri "http://johnshopkins.edu" -Method Head -TimeoutSec 120).Headers.Date -as [DateTime]
+		if ($internetDate -is [DateTime]) {
+			$runTimeHours = [math]::Round(($internetDate - $xosdruntimestart).TotalHours, 2)
+		}
+	}
+} catch {
+	Write-Error $_
+}
 
 # Show an error if any required TS hasn't run.
 if ( $XHasTSOSDGUIRun -ne "true" ) {
@@ -132,12 +147,15 @@ if ( $XHasTSPostSetupRun -ne "true" ) {
 	$errorCount++
 }
 
-# Formats results.
+# Formats error messages for the pop-up and email.
 $errmsgs = $errmsgs -join "`r`n"
 if( $xosdcompleted -eq "true" ) {
     $errmsgs += "`r`n>> NOTE: All other steps should have completed successfully."
 } else {
 	$errmsgs += "`r`n>> NOTE: May have exited early due to failed actions."
+}
+if ($runtimeHours) {
+	$errmsgs += "`r`n>> Total Runtime Hours: $runTimeHours"
 }
 	
 # Sends an email notificaton if an email address was set.
@@ -155,7 +173,7 @@ if (-Not $DisableEmail) {
 		if ($errorCount -le 0 -And $osdstatus -ne "Failure") {
 			$emailSubject = "Imaging Success for $systemName"
 			$emailPriority = "Normal"
-			$body = $emailSubject + ". All required steps have been completed. If driver or software updates are selected, they will be installed prior to completing the operating system deployment task sequence (may take 1+ hours)."
+			$body = $emailSubject + ". All required steps have been completed. `r`nIf driver or software updates are selected, they will be installed prior to completing the operating system deployment task sequence (may take 1+ hours).`r`nTotal Runtime Hours: $runtimeHours"
 		} else {
 			$_smtspackagename = $tsenv.Value("_SMSTSPackageName")
 			$osdlogpath = ('{0}\{1}' -f '\\win.ad.jhu.edu\Data\osdlogs$', $_smtspackagename)
@@ -182,8 +200,6 @@ if (-Not $DisableEmail) {
 			Write-Error $_
 		}
 	}
-} else {
-	Write-Host "-EmailSender is null or empty"
 }
 
 # Log all the errors and warnings.
@@ -196,6 +212,7 @@ Write-Host "System Final Name: $systemName"
 Write-Host "OSDStatus: $osdstatus"
 Write-Host "Current IP: $currentIP"
 Write-Host "XOSDCompleted: $xosdcompleted"
+Write-Host "Total Runtime Hours: $runtimeHours"
 Write-Host "Rename Computer Success (XOSDRenameSuccess): $xosdrenamesuccess"
 Write-Host "Move Computer Success (XOSDMoveSuccess): $xosdmovesuccess"
 Write-Host "OSDGUI TS Completed: $XHasTSOSDGUICompleted"
@@ -209,9 +226,13 @@ Write-Host $errmsgs
 # Further logging if we have any errors.
 if ($errorCount -gt 0 -Or $osdstatus -eq "Failure") {
 	if ($_smstsinwinpe -ne "true") {
-		# Check current WMI consistency
-		$repo = & winmgmt /verifyrepository 2>&1
-		Write-Host $repo
+		try {
+			# Check current WMI consistency
+			$repo = & winmgmt /verifyrepository 2>&1
+			Write-Host $repo
+		} catch {
+			Write-Error $_
+		}
 		
 		# Basic WMI query
 		try {
@@ -222,15 +243,19 @@ if ($errorCount -gt 0 -Or $osdstatus -eq "Failure") {
 			Write-Host ("Basic WMI Query Error: " + $_.Exception.Message)
 		}
 
-		# Check and report on WBEM Provider errors
-		$wbemErrorCount = Get-WinEvent -FilterHashtable @{
-			LogName   = 'Microsoft-Windows-WMI-Activity/Operational'
-			Level     = 2
-			StartTime = (Get-Date).AddMinutes(-15)
-		} -MaxEvents 50 | Where-Object {
-		  $_.Message -match 'Provider|WBEM_E'
-		} | Measure-Object | Select -ExpandProperty Count
-		Write-Host ("Recent WBEM_E (WMI) errors: $wbemErrorCount")
+		try {
+			# Check and report on WBEM Provider errors
+			$wbemErrorCount = Get-WinEvent -FilterHashtable @{
+				LogName   = 'Microsoft-Windows-WMI-Activity/Operational'
+				Level     = 2
+				StartTime = (Get-Date).AddMinutes(-15)
+			} -MaxEvents 50 | Where-Object {
+			  $_.Message -match 'Provider|WBEM_E'
+			} | Measure-Object | Select -ExpandProperty Count
+			Write-Host ("Recent WBEM_E (WMI) errors: $wbemErrorCount")
+		} catch {
+			Write-Error $_
+		}
 	}
 }
 
