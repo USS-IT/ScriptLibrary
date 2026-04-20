@@ -31,6 +31,7 @@ try {
 	throw $_
 }
 
+$systemName = $tsenv.Value("XFinalComputerName")
 $xosdruntimestart = $tsenv.Value("XOSDRuntimeStart")
 $xosdcustomdriversuccess = $tsenv.Value("XOSDCustomDriverSuccess")
 $xosdsoftwareupdatesuccess = $tsenv.Value("XOSDSoftwareUpdateSuccess")
