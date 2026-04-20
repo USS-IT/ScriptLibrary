@@ -173,13 +173,16 @@ if (-Not $DisableEmail) {
 		if ($errorCount -le 0 -And $osdstatus -ne "Failure") {
 			$emailSubject = "Imaging Success for $systemName"
 			$emailPriority = "Normal"
-			$body = $emailSubject + ". All required steps have been completed. `r`nIf driver or software updates are selected, they will be installed prior to completing the operating system deployment task sequence (may take 1+ hours).`r`nTotal Runtime Hours: $runtimeHours"
+			$body = $emailSubject + ". All required steps have been completed. `r`n`r`nIf driver or software updates are selected, they will be installed prior to completing the operating system deployment task sequence (may take 1+ hours)."
+			if ($runtimeHours) {
+				$body += "`r`n`r`nTotal Runtime Hours: $runtimeHours"
+			}
 		} else {
 			$_smtspackagename = $tsenv.Value("_SMSTSPackageName")
 			$osdlogpath = ('{0}\{1}' -f '\\win.ad.jhu.edu\Data\osdlogs$', $_smtspackagename)
 			$emailSubject = "Imaging Failure for $systemName"
 			$emailPriority = "High"
-			$body = $emailSubject + ".`r`n" + $errmsgs + "`r`nSystem Name: " + $systemName + "`r`nLog Path: " + $osdlogpath
+			$body = $emailSubject + ".`r`n" + $errmsgs + "`r`n`r`nSystem Name: " + $systemName + "`r`nLog Path: " + $osdlogpath
 		}
 			  
 		$emailParams = @{
