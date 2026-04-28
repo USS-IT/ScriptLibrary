@@ -108,6 +108,9 @@ $XHasTSPartCompleted = $tsenv.Value("XHasTSPartCompleted")
 $XHasTSNetCompleted = $tsenv.Value("XHasTSNetCompleted")
 $XHasTSSoftwareCompleted = $tsenv.Value("XHasTSSoftwareCompleted")
 $XHasTSPostSetupCompleted = $tsenv.Value("XHasTSPostSetupCompleted")
+$XHasTSPostSetupCompleted = $tsenv.Value("XHasTSPostSetupCompleted")
+$XInstallSoftwareUpdates = $tsenv.Value("XInstallSoftwareUpdates")
+$XTBDCustomDrivers = $tsenv.Value("XTBDCustomDrivers")
 
 # Get the current runtime in hours.
 # We use a WebRequest to avoid time syncing issues.
@@ -173,9 +176,25 @@ if (-Not $DisableEmail) {
 		if ($errorCount -le 0 -And $osdstatus -ne "Failure") {
 			$emailSubject = "Imaging Success for $systemName"
 			$emailPriority = "Normal"
-			$body = $emailSubject + ". All required steps have been completed. `r`n`r`nIf driver or software updates are selected, they will be installed prior to completing the operating system deployment task sequence (may take 1+ hours)."
+			$body = $emailSubject + ". All required steps have been completed."
 			if ($runtimeHours) {
 				$body += "`r`n`r`nTotal Runtime Hours: $runtimeHours"
+			}
+			if ($XTBDCustomDrivers -Or $XInstallSoftwareUpdates) {
+				$body += "`r`n"
+				$etaStart = 0
+				$etaEnd = 0
+				if ($XTBDCustomDrivers) {
+					$body += "`r`nCustom Drivers has been selected."
+					$etaStart = 0.5
+					$etaEnd = 1
+				}
+				if ($XInstallSoftwareUpdates) {
+					$body += "`r`nSoftware Updates have been selected."
+					$etaStart += 0.5
+					$etaEnd += 1.5
+				}
+				$body += "`r`nThe task sequence will continue on to updating drivers or software updates. You should receive another email after all steps have been completed. Please note these steps are optional.`r`n`r`nEstimated time to final completion: $etaStart to $etaEnd hours"
 			}
 		} else {
 			$_smtspackagename = $tsenv.Value("_SMSTSPackageName")
@@ -223,6 +242,8 @@ Write-Host "Partition TS Completed: $XHasTSPartCompleted"
 Write-Host "Net Drivers TS Completed: $XHasTSNetCompleted"
 Write-Host "Software TS Completed: $XHasTSSoftwareCompleted"
 Write-Host "Post-Setup TS Completed: $XHasTSPostSetupCompleted"
+Write-Host "Install Custom Drivers: $XTBDCustomDrivers"
+Write-Host "Install Software Updates: $XInstallSoftwareUpdates"
 Write-Host "Error Count: $errorCount"
 Write-Host $errmsgs
 
