@@ -92,8 +92,9 @@ $gpos = $SEARCHBASES | foreach {
 }
 
 if ([string]::IsNullOrEmpty($exportFP)) {
-	$exportFP = "${ENV:OneDrive}\Documents\uss-gpos.csv"
-	if (-Not (Test-Path "${ENV:OneDrive}\Documents" -PathType Container)) {
+	if ((Test-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)) -PathType Container)) {
+		$exportFP = "$([Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments))\uss-gpos.csv"
+	} else {
 		$exportFP = "uss-gpos.csv"
 	}
 }
