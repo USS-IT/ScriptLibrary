@@ -5,12 +5,19 @@
 	.DESCRIPTION
 	Exports comments and status on each GPO under given OUs to a CSV file. Exports into your OneDrive Documents folder by default.
 	
+	.PARAMETER CSV
+	Filepath for export CSV file. Defaults to Documents or current folder.
+	
 	.NOTES
 	Author: Matthew Carras
 	
 	Requirements:
 	* RSAT: Active Directory PowerShell module
 #>
+param(
+	[string]$CSV
+)
+
 # Fix a bug with Trustee output from Get-GPPermission for PowerShell 7.x
 if ($PSVersionTable.PSVersion.Major -ge 7) {
 	Import-Module -Name GroupPolicy -SkipEditionCheck -Force
@@ -20,8 +27,6 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 
 # May give multiple search bases.
 $SEARCHBASES = @("OU=USS,DC=win,DC=ad,DC=jhu,DC=edu")
-# Will export to OneDrive Documents folder by default (if it exists), otherwise current directory.
-$exportFP = $null
 # Default GPO permission groups which are ignored for exports.
 $GPODEFAULTTRUSTEE = @("SYSTEM","Enterprise Admins","Domain Admins","ENTERPRISE DOMAIN CONTROLLERS")
 
@@ -91,6 +96,7 @@ $gpos = $SEARCHBASES | foreach {
 	}
 }
 
+$exportFP = $CSV
 if ([string]::IsNullOrEmpty($exportFP)) {
 	if ((Test-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)) -PathType Container)) {
 		$exportFP = "$([Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments))\uss-gpos.csv"
