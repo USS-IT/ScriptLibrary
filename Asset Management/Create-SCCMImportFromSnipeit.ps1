@@ -18,6 +18,8 @@ $asset_export_fp = '\\win.ad.jhu.edu\cloud\hsa$\ITServices\Reports\SnipeIt\Expor
 $sccm_import_filename = 'Import.csv'
 # Where to copy the import file.
 $sccm_import_path = '\\win.ad.jhu.edu\data\sccmpack$\uss\Import-Computers'
+# Where to offer to move disabled computers to after re-enabling them.
+$AD_OU_MOVETO = "OU=USS-XX,OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu"
 # -- END CONFIG --
 
 $assetCols = @('id','asset_tag','name','assigned_to','manufacturer','model','system form factor','PC Checkboxes','SMBIOS GUID','SCCM LastActiveTime')
@@ -85,10 +87,27 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 			if ($asset_pccheckboxes -match "Exists in SCCM") {
 				Write-Warning "[$asset_name] already appears to exist in SCCM. Try PXE Boot or double-check SCCM."
 			}
+			# Check if SMBIOS GUID may be duplicated.
+			$assets_guid = $assets | where {$_.'SMBIOS GUID' -eq $asset_guid}
+			if (($assets_guid | Measure).Count -gt 1) {
+				Write-Warning ("[{0}] with ID [{1}] has duplicate SMBIOS GUID. Other IDs: {2}" -f $asset.name, $asset.id, (($assets_guid.id | where {$_ -ne $asset.id}) -join ", "))
+			}
 			# Search AD for computer if RSAT tools are installed.
 			try {
 				if (($adcomp = Get-ADComputer $asset_name -ErrorAction SilentlyContinue) -And -Not [string]::IsNullOrEmpty($adcomp.Name) -And -Not $adcomp.Enabled) {
 					Write-Warning ("[$asset_name] is currently disabled in AD. DN={0}" -f $adcomp.DistinguishedName)
+					$choice = $null
+					$choice = Read-Host "** Enable this computer and move into USS-XX? (N/Y, Default: N)"
+					if ($choice -eq "Y") {
+						try {
+							Enable-ADAccount $adcomp.distinguishedname -ErrorAction Stop
+							Write-Host "Re-enabled [$asset_name] in AD."
+							Move-ADObject $adcomp.distinguishedname -TargetPath $AD_OU_MOVETO -ErrorAction Stop
+							Write-Host "Moved [$asset_name] to [$AD_OU_MOVETO]"
+						} catch {
+							Write-Error $_
+						}
+					}
 				}
 			} catch {
 			}
@@ -102,10 +121,9 @@ while (-Not [string]::IsNullOrWhitespace($getAssetChoice) -And $getAssetChoice -
 	$loopCount++
 }
 if ($outputRows.Count -gt 0) {
-	# Save file to OneDrive Documents by default
-	if (Test-Path -Path "${ENV:ONEDRIVE}\Documents") {
-		$save_path = "${ENV:ONEDRIVE}\Documents"
-	} else {
+	# Save file to Documents folder by default
+	$save_path = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+	if (-Not (Test-Path $save_path -PathType Container)) {
 		$save_path = ".\"
 	}
 
@@ -114,9 +132,11 @@ if ($outputRows.Count -gt 0) {
 	If(Test-Path -Path $save_fp -PathType Leaf) {
 		Write-Host ("** Import file already found at [{0}]. Select option to append or replace this file." -f $save_fp)
 		$choice = Read-Host "** Append previously saved import file? (N/Y, Default: N)"
+		if($choice -ne "Y") {
+			Clear-Content -Path $save_fp | Out-Null
+		}
 	}
 	if($choice -ne "Y") {
-		Clear-Content -Path $save_fp | Out-Null
 		Add-Content -Path $save_fp -Value '"Name","SMBIOS GUID","MAC Address"'
 	}
 	foreach ($row in $outputRows) {
