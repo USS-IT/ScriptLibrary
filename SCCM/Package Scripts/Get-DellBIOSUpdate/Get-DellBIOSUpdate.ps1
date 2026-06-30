@@ -27,8 +27,8 @@
 	Level of console logging.
 	
 	.OUTPUTS
-	Exit code 0 - Without -Install, No BIOS update available
-	Exit code 1 - Without -Install, BIOS update available
+	Exit code 0 - Without -Install, No BIOS update available. With -Install, update was successful but not restart is required (should not happen).
+	Exit code 1 - Without -Install, BIOS update available. With -Install, update was unsuccessful.
 	Exit code 3010 - With -Install, BIOS update successful, restart required
 	Exit code -1 - Function thrown error
 	Exit code -2 - Uncaught or unexpected error
@@ -482,7 +482,7 @@ if ($Install) {
 			Write-Host "Install-DellBIOSUpdate returned exit code [$exitCode]"
 		}
 		# 0 - Success, 2 - Restart required, 6 - Rebooting
-		if ($exitCode -ne $null -And $exitCode -in 0,2,6) {
+		if ($exitCode -in 2,6) {
 			$exitCode = 3010
 		}
 	} catch {
@@ -521,6 +521,9 @@ if ($Install) {
 	}
 }
 
+if ($LogLevel -eq 0) {
+	Write-Host "Returning exit code: $exitCode"
+}
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 
 [System.Environment]::Exit($exitCode)
