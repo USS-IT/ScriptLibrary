@@ -29,21 +29,23 @@ $LogPath = "$LogDir\$($_scriptName).log"
 
 <#
  In case we need to setup multiple related tasks in the same script.
- Source is specific to this event log
- Event ID be 1000 unless we have more than one event per source
+ EventSource is specific to this event log
+ EventID should be 1000 unless we have more than one event per source
+ 
+ To update tasks, change the TaskDescription. For example, add "Version: 1.1" to your task description, incrementing it as needed.
 
-Parameters for powershell scripts:
-Execute = "powershell.exe" `
-Argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPaths`""
+ Parameters for powershell scripts:
+ Execute = "powershell.exe" `
+ Argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPaths`""
 #>
 $Tasks = @(
 	@{
 		EventSource = "Notify-Reenable_WiFi-Success"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Success"
-		TaskDescription = "Displays a toast notification when wifi is successfully re-enabled."
-		Execute = "powershell.exe"
-		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"WiFi has been successfully re-enabled.`" -Title `"WiFi Re-enabled`" -LauncherID `"$ShortcutScriptPath`""
+		TaskDescription = "Displays a toast notification when wifi is successfully re-enabled. Version: 1.1.1"
+		Execute = "C:\Windows\System32\conhost.exe"
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"WiFi has been successfully re-enabled.`" -Title `"WiFi Re-enabled`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
 	},
 	
@@ -51,9 +53,9 @@ $Tasks = @(
 		EventSource = "Notify-Reenable_WiFi-Failure"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Failure"
-		TaskDescription = "Displays a toast notification when wifi fails to re-enable."
-		Execute = "powershell.exe"
-		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"An error has occurred attempting to re-enable WiFi.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
+		TaskDescription = "Displays a toast notification when wifi fails to re-enable. Version: 1.1.1"
+		Execute = "C:\Windows\System32\conhost.exe"
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"An error has occurred attempting to re-enable WiFi.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
 	},
 	
@@ -61,9 +63,9 @@ $Tasks = @(
 		EventSource = "Notify-Reenable_WiFi-Missing"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Missing"
-		TaskDescription = "Displays a toast notification when no disabled wifi adapters are found."
-		Execute = "powershell.exe"
-		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"No disabled WiFi adapters found.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
+		TaskDescription = "Displays a toast notification when no disabled wifi adapters are found. Version: 1.1.1"
+		Execute = "C:\Windows\System32\conhost.exe"
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"No disabled WiFi adapters found.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
 	}
 )
@@ -78,9 +80,10 @@ foreach ($task in $Tasks) {
 	Write-Host "Creating scheduled task [$($task.TaskName)]..."
 
 	try {
-		# Check if scheduled task already exists.	
-		if (Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue) {
-			Write-Host "Deleting preexisting scheduled task [$($task.TaskName)]..."
+		# Check if scheduled task already exists, or needs an update.
+		$existingTask = Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue
+		if ($existingTask -And ($existingTask.Description -ne $task.TaskDescription -Or $task.TaskDescription -eq $null)) {
+			Write-Host "[$($task.TaskName)] already exists, but we have a new description. Deleting old version..."
 			Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
 		}
 	
