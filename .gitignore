@@ -2166,3 +2166,6 @@ tags
 
 ### USS Script Output Files
 *.csv
+
+### Ivanti Pulse config files
+.pulsepreconfig
