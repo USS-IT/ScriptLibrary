@@ -20,17 +20,17 @@
 	# Always On
 	Write-EventLog -LogName "USS-EventLog" -Source "SwitchVPNProfile-AlwaysOn" -EventID 1000 -EntryType Information -Message "Trigger VPN switch to AlwaysOn"
 #>
-# Requires Administrator privileges
 #Requires -RunAsAdministrator
 
 # Configuration Variables
-$SharedEventLog = "USS-EventLog"				# Shared by all USS scripts using our custom Event Log
-$LogDir = "C:\USS\Logs"
+# Shared by all USS scripts using our custom Event Log
+$SharedEventLog = "USS-EventLog"
+$LogDir = "C:\USS\Logs\Packages\SwitchVPN"
 
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Install-Tasks-SwitchVPNProfile.ps1"
+	$_scriptName = "Install-Tasks-UNKNOWN.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 
@@ -41,26 +41,26 @@ $LogPath = "$LogDir\$($_scriptName).log"
 
 Parameters for powershell scripts:
 Execute = "powershell.exe" `
-Argument = "-NoProfile -ExecutionPolicy Bypass -File `"C:\ScriptPath`""
+Argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPaths`""
 #>
-$Tasks = @(
+$EventsAndTasks = @(	
 	@{
 		EventSource = "SwitchVPNProfile-General"		
 		EventID = 1000									
 		TaskName = "USS-SwitchVPNProfile-General"
 		TaskDescription = "Switches VPN client to the General profile when triggered."
-		Execute = "C:\JHMCIS\VPNUtilities\default\config.cmd"
+		Execute = "C:\USS\Scripts\User\SwitchVPN\general.cmd"
 		Argument = $null
-		WorkingDirectory = "C:\JHMCIS\VPNUtilities\default"
+		WorkingDirectory = "C:\USS\Scripts\User\SwitchVPN"
 	},
 	@{
 		EventSource = "SwitchVPNProfile-AlwaysOn"			
 		EventID = 1000										
 		TaskName = "USS-SwitchVPNProfile-AlwaysOn"
 		TaskDescription = "Switches VPN client to the Always On profile when triggered."
-		Execute = "C:\JHMCIS\VPNUtilities\premium\config.cmd"
+		Execute = "C:\USS\Scripts\User\SwitchVPN\alwayson.cmd"
 		Argument = $null
-		WorkingDirectory = "C:\JHMCIS\VPNUtilities\premium"
+		WorkingDirectory = "C:\USS\Scripts\User\SwitchVPN"
 	}
 )
 
@@ -83,17 +83,17 @@ try {
 } catch {
     Write-Host "Error with creating custom event log [$SharedEventLog]: $_"
 	Stop-Transcript | Out-Null
-	exit 1
+	[System.Environment]::Exit(1)
 }
 
 # Iterate over each task
-foreach ($task in $Tasks) {
-	Write-Host "Processing [$($task.TaskName)]"
+$errorCode = 0
+foreach ($task in $EventsAndTasks) {
+	Write-Host "Processing [$($task.EventSource)]"
 
 	try {
 		Write-Host "Creating custom event source [$($task.EventSource)] if needed..."
 		if (-not [System.Diagnostics.EventLog]::SourceExists($task.EventSource)) {
-
 			New-EventLog -LogName $SharedEventLog -Source $task.EventSource
 			Write-Host "Event source [$($task.EventSource)] created successfully"
 		} else {
@@ -101,36 +101,40 @@ foreach ($task in $Tasks) {
 		}
 	} catch {
 		Write-Error "Error creating event source [$($task.EventSource)]: $_"
-		continue
+		$errorCode = 2
+		break
 	}
 
-	# Step 3: Create the Scheduled Task
-	Write-Host "Creating scheduled task [$($task.TaskName)]..."
+	if ([string]::IsNullOrEmpty($task.TaskName)) {
+		Write-Host "Task Name is empty, skipping task creation"
+	} else {
+		# Step 3: Create the Scheduled Task
+		Write-Host "Creating scheduled task [$($task.TaskName)]..."
 
-	try {
-		# Check if scheduled task already exists.	
-		if (Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue) {
-			Write-Host "Deleting preexisting scheduled task [$($task.TaskName)]..."
-			Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
-		}
-	
-		$params = @{
-			Execute = $task.Execute
-		}
-		if (-Not [string]::IsNullOrEmpty($task.Argument)) {
-			$params.Add('Argument', $task.Argument)
-		}
-		if (-Not [string]::IsNullOrEmpty($task.WorkingDirectory)) {
-			$params.Add('WorkingDirectory', $task.WorkingDirectory)
-		}
-		# Define the action - Run PowerShell script
-		$Action = New-ScheduledTaskAction @params
+		try {
+			# Check if scheduled task already exists.	
+			if (Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue) {
+				Write-Host "Deleting preexisting scheduled task [$($task.TaskName)]..."
+				Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
+			}
+		
+			$params = @{
+				Execute = $task.Execute
+			}
+			if (-Not [string]::IsNullOrEmpty($task.Argument)) {
+				$params.Add('Argument', $task.Argument)
+			}
+			if (-Not [string]::IsNullOrEmpty($task.WorkingDirectory)) {
+				$params.Add('WorkingDirectory', $task.WorkingDirectory)
+			}
+			# Define the action - Run PowerShell script
+			$Action = New-ScheduledTaskAction @params
 
-		# Define the event trigger
-		# This creates an XPath query to filter for the specific event
-		$CIMTriggerClass = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler:MSFT_TaskEventTrigger
-		$Trigger = New-CimInstance -CimClass $CIMTriggerClass -ClientOnly
-		$Trigger.Subscription = @"
+			# Define the event trigger
+			# This creates an XPath query to filter for the specific event
+			$CIMTriggerClass = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler:MSFT_TaskEventTrigger
+			$Trigger = New-CimInstance -CimClass $CIMTriggerClass -ClientOnly
+			$Trigger.Subscription = @"
 <QueryList>
   <Query Id="0" Path="$SharedEventLog">
 	<Select Path="$SharedEventLog">
@@ -139,35 +143,39 @@ foreach ($task in $Tasks) {
   </Query>
 </QueryList>
 "@
-		$Trigger.Enabled = $True
+			$Trigger.Enabled = $True
 
-		# Define principal (run as SYSTEM with highest privileges)
-		$Principal = New-ScheduledTaskPrincipal `
-			-UserId "SYSTEM" `
-			-LogonType ServiceAccount `
-			-RunLevel Highest
+			# Define principal (run as SYSTEM with highest privileges)
+			$Principal = New-ScheduledTaskPrincipal `
+				-UserId "SYSTEM" `
+				-LogonType ServiceAccount `
+				-RunLevel Highest
 
-		# Define settings
-		$Settings = New-ScheduledTaskSettingsSet `
-			-AllowStartIfOnBatteries `
-			-DontStopIfGoingOnBatteries `
-			-StartWhenAvailable `
-			-ExecutionTimeLimit (New-TimeSpan -Hours 2)
+			# Define settings
+			$Settings = New-ScheduledTaskSettingsSet `
+				-AllowStartIfOnBatteries `
+				-DontStopIfGoingOnBatteries `
+				-StartWhenAvailable `
+				-ExecutionTimeLimit (New-TimeSpan -Hours 2)
 
-		# Register the scheduled task
-		$Task = Register-ScheduledTask `
-			-TaskName $task.TaskName `
-			-Action $Action `
-			-Trigger $Trigger `
-			-Principal $Principal `
-			-Settings $Settings `
-			-Description $task.TaskDescription `
-			-Force
+			# Register the scheduled task
+			$Task = Register-ScheduledTask `
+				-TaskName $task.TaskName `
+				-Action $Action `
+				-Trigger $Trigger `
+				-Principal $Principal `
+				-Settings $Settings `
+				-Description $task.TaskDescription `
+				-Force
 
-		Write-Host "Scheduled task [$($task.TaskName)] created successfully"
-	} catch {
-		Write-Error "Error creating scheduled task [$($task.TaskName)]: $_"
+			Write-Host "Scheduled task [$($task.TaskName)] created successfully"
+		} catch {
+			Write-Error "Error creating scheduled task [$($task.TaskName)]: $_"
+			$errorCode = 3
+			break
+		}
 	}
 }
 
 Stop-Transcript | Out-Null
+[System.Environment]::Exit($errorCode)
