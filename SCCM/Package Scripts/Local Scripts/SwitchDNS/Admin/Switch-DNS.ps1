@@ -23,7 +23,7 @@
 #>
 #Requires -RunAsAdministrator
 param(
-	[IPAddress[]] $DNSServer = [IPAddress]'8.8.8.8'
+	[IPAddress[]] $DNSServers = [IPAddress]'8.8.8.8',
 		
 	[switch] $DNSOverride,
 	
@@ -75,7 +75,7 @@ try {
 		
 		if ($Mode -ne 'Add' -And $currentDns -contains $DNSServers.IPAddressToString) {
 			$prevDNS = $null
-			Write-Host "DNS currently includes $DNSSERVER. Checking if we have any previously saved static DNS settings..."
+			Write-Host "DNS currently includes $($DNSServers.IPAddressToString -join ','). Checking if we have any previously saved static DNS settings..."
 			if ((Test-Path $StaticDNSJson -PathType Leaf)) {
 				$prevDNS = Get-Content -Path $StaticDNSJson
 				if (-Not [string]::IsNullOrEmpty($prevDNS)) {
@@ -85,6 +85,7 @@ try {
 			if ($prevDNS -ne $null) {
 				Write-Host "Reverting to previous DNS [$($prevDNS -join ',')]"
 				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS
+				Clear-Content $StaticDNSJson
 			} else {
 				Write-Host "Reverting to DHCP DNS"
 				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses
@@ -95,7 +96,7 @@ try {
 				Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-SwitchDNS-Reverted' -EventID 1000 -EntryType Information -Message 'Notify of successful DNS change'
 			}
 		} elseif ($Mode -ne 'Reset' -And $adapter.Status -eq 'Up') {
-			Write-Host "Adapter is currently up, and DNS does not include $DNSSERVER."
+			Write-Host "Adapter is currently up, and DNS does not include $($DNSServers.IPAddressToString -join ',')."
 		
 			# Check if we have any statically added DNS already.
 			$key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
@@ -106,8 +107,8 @@ try {
 					$null = New-Item -Path $dir -ItemType Directory
 				}
 				$staticDNS = $staticDNS -split ',' | where {$DNSServers.IPAddressToString -notcontains $_}
-				if (($staticDNS | Measure).Count -gt 0) {
-					Write-Host "Saving static DNS to [$StaticDNSJson]"
+				if (($staticDNS | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($staticDNS | Select -First 1))) {
+					Write-Host "Saving static DNS to [$StaticDNSJson]: $($staticDNS -join ',')"
 					Set-Content -Path $StaticDNSJson -Value ($currentDns | ConvertTo-Json)
 				}
 			}
