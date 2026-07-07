@@ -79,10 +79,10 @@ try {
 			if ((Test-Path $StaticDNSJson -PathType Leaf)) {
 				$prevDNS = Get-Content -Path $StaticDNSJson
 				if (-Not [string]::IsNullOrEmpty($prevDNS)) {
-					$prevDNS = $prevDNS | ConvertFrom-Json
+					$prevDNS = $prevDNS | ConvertFrom-Json | where {$DNSServers.IPAddressToString -notcontains $_}
 				}
 			}
-			if ($prevDNS -ne $null) {
+			if ($prevDNS -ne $null -And -Not [string]::IsNullOrWhitespace(($prevDNS | Select -First 1))) {
 				Write-Host "Reverting to previous DNS [$($prevDNS -join ',')]"
 				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS
 				Clear-Content $StaticDNSJson
@@ -102,6 +102,7 @@ try {
 			$key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
 			$staticDNS = Get-ItemProperty $key | Select -ExpandProperty NameServer
 			if (-Not [string]::IsNullOrEmpty($staticDNS)) {
+				Write-Host "Current static DNS: $staticDNS"
 				$dir = Split-Path -Parent $StaticDNSJson
 				if (-not (Test-Path $dir -PathType Container)) {
 					$null = New-Item -Path $dir -ItemType Directory
