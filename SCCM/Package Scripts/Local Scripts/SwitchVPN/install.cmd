@@ -95,5 +95,7 @@ REM Log the rest of the output.
 			del /q /f "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Switch to General VPN.lnk"
 		)
 	)
+	
+	echo ERRORLEVEL=!ERRORLEVEL!
 ) > "%_LOGFILE%" 2>&1
 EXIT /b !ERRORLEVEL!

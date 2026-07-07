@@ -49,18 +49,18 @@ $EventsAndTasks = @(
 		EventID = 1000									
 		TaskName = "USS-SwitchVPNProfile-General"
 		TaskDescription = "Switches VPN client to the General profile when triggered."
-		Execute = "C:\USS\Scripts\User\SwitchVPN\general.cmd"
+		Execute = "general.cmd"
 		Argument = $null
-		WorkingDirectory = "C:\USS\Scripts\User\SwitchVPN"
+		WorkingDirectory = "C:\USS\Scripts\Admin\SwitchVPN"
 	},
 	@{
 		EventSource = "SwitchVPNProfile-AlwaysOn"			
 		EventID = 1000										
 		TaskName = "USS-SwitchVPNProfile-AlwaysOn"
 		TaskDescription = "Switches VPN client to the Always On profile when triggered."
-		Execute = "C:\USS\Scripts\User\SwitchVPN\alwayson.cmd"
+		Execute = "alwayson.cmd"
 		Argument = $null
-		WorkingDirectory = "C:\USS\Scripts\User\SwitchVPN"
+		WorkingDirectory = "C:\USS\Scripts\Admin\SwitchVPN"
 	}
 )
 
