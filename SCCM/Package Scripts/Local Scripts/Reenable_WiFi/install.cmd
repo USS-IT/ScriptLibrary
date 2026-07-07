@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableDelayedExpansion
 REM Creates the USS directory if it doesn't already exist with appropriate permissions.
 REM These permissions should also be set by GPO.
 REM It then copies over the scripts and installs the scheduled tasks.
@@ -67,18 +68,20 @@ REM Log the rest of the output.
 	mkdir "%_STARTMENUFOLDER%"
 
 	REM Copy files and install scheduled tasks.
-	echo Copying [Enable-WiFiAdapters.ps1] to [%_ADMINSCRIPTSDIR%\%_PACKAGEFOLDER%]...
-	copy "%~dp0Enable-WiFiAdapters.ps1" "%_ADMINSCRIPTSDIR%\%_PACKAGEFOLDER%" /V /Y
-	echo Copying [Register-Tasks-NotifyReenableWiFi.ps1] to [%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%]...
-	copy "%~dp0Register-Tasks-NotifyReenableWiFi.ps1" "%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%" /V /Y
-	echo Copying [Show-Toast.ps1] to [%_USERSCRIPTSDIR%]...
-	copy "%~dp0Show-Toast.ps1" "%_USERSCRIPTSDIR%" /V /Y
-	echo Copying [Enable_WiFi.cmd] to [%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%]...
-	copy "%~dp0Enable_WiFi.cmd" "%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%" /V /Y
-	echo Copying [%~dp0Re-enable WiFi.lnk] to [%_STARTMENUFOLDER%]...
-	copy "%~dp0Re-enable WiFi.lnk" "%_STARTMENUFOLDER%" /V /Y
+	echo Copying [Admin\*] to [%_ADMINSCRIPTSDIR%\%_PACKAGEFOLDER%]...
+	copy "%~dp0Admin\*" "%_ADMINSCRIPTSDIR%\%_PACKAGEFOLDER%" /V /Y
+	echo Copying [User\*] to [%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%]...
+	copy "%~dp0User\*" "%_USERSCRIPTSDIR%\%_PACKAGEFOLDER%" /V /Y
 	
 	REM Install Scheduled Tasks
-	powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Install-Tasks-ReenableWiFi.ps1"
+	powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Install-Tasks.ps1"
+	IF !ERRORLEVEL! NEQ 0 (
+		echo FATAL ERROR CODE [!ERRORLEVEL!], aborting
+	) ELSE (
+		echo Copying [Shortcuts\*] to [%_STARTMENUFOLDER%]...
+		copy "%~dp0Shortcuts\*" "%_STARTMENUFOLDER%" /V /Y
+	)
+	
+	echo ERRORLEVEL=!ERRORLEVEL!
 ) > "%_LOGFILE%" 2>&1
-REM EXIT /b %ERRORLEVEL%
+EXIT /b !ERRORLEVEL!

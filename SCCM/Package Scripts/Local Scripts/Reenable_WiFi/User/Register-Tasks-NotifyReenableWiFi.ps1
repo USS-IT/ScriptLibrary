@@ -16,7 +16,7 @@
 # Shared by all USS scripts using our custom Event Log
 $SharedEventLog = "USS-EventLog"
 $LogDir = "C:\USS\Logs\User\Reenable_WiFi"
-$ScriptPath = "C:\USS\Scripts\User\Show-Toast.ps1"
+$ScriptPath = "C:\USS\Scripts\User\Reenable_WiFi\Show-Toast.ps1"
 # Path to the script used by our shortcut. Used for LauncherID.
 $ShortcutScriptPath = "C:\USS\Scripts\User\Reenable_WiFi\Enable_WiFi.cmd"
 

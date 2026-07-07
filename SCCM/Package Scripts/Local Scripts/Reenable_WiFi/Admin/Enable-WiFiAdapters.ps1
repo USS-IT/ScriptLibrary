@@ -16,7 +16,7 @@
 #Requires -RunAsAdministrator
 param(
 	[switch] $Notify,
-	[string] $LogDir = "C:\USS\Logs"
+	[string] $LogDir = "C:\USS\Logs\Packages\Reenable_WiFi"
 )
 
 try {
