@@ -32,7 +32,7 @@ $ScriptPath = "C:\USS\Scripts\Admin\Reenable_WiFi\Enable-WiFiAdapters.ps1"
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Install-Tasks-UNKNOWN.ps1"
+	$_scriptName = "Install-Tasks.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 
@@ -49,8 +49,8 @@ $EventsAndTasks = @(
 	@{
 		EventSource = "Enable-WiFi"		
 		EventID = 1000									
-		TaskName = "USS-Enable-WiFiAdapters"
-		TaskDescription = "Re-enables all wifi adapters."
+		TaskName = "USS-Reenable_WiFi-Enable-WiFiAdapters"
+		TaskDescription = "Re-enables all wifi adapters. Source: Reenable_WiFi package"
 		Execute = "powershell.exe"
 		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify"
 		#WorkingDirectory = ""
