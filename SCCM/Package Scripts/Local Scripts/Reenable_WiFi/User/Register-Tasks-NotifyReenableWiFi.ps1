@@ -23,7 +23,7 @@ $ShortcutScriptPath = "C:\USS\Scripts\User\Reenable_WiFi\Enable_WiFi.cmd"
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Register-Tasks-UNKNOWN.ps1"
+	$_scriptName = "Register-Tasks.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 
@@ -43,7 +43,7 @@ $Tasks = @(
 		EventSource = "Notify-Reenable_WiFi-Success"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Success"
-		TaskDescription = "Displays a toast notification when wifi is successfully re-enabled. Version: 1.1.1"
+		TaskDescription = "Displays a toast notification when wifi is successfully re-enabled. Source: Reenable_WiFi package. Version: 1.1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
 		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"WiFi has been successfully re-enabled.`" -Title `"WiFi Re-enabled`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
@@ -53,7 +53,7 @@ $Tasks = @(
 		EventSource = "Notify-Reenable_WiFi-Failure"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Failure"
-		TaskDescription = "Displays a toast notification when wifi fails to re-enable. Version: 1.1.1"
+		TaskDescription = "Displays a toast notification when wifi fails to re-enable. Source: Reenable_WiFi package. Version: 1.1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
 		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"An error has occurred attempting to re-enable WiFi.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
@@ -63,7 +63,7 @@ $Tasks = @(
 		EventSource = "Notify-Reenable_WiFi-Missing"		
 		EventID = 1000									
 		TaskName = "USS-Notify-Reenable_WiFi-Missing"
-		TaskDescription = "Displays a toast notification when no disabled wifi adapters are found. Version: 1.1.1"
+		TaskDescription = "Displays a toast notification when no disabled wifi adapters are found. Source: Reenable_WiFi package. Version: 1.1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
 		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"No disabled WiFi adapters found.`" -Title `"Error`" -LauncherID `"$ShortcutScriptPath`""
 		#WorkingDirectory = ""
