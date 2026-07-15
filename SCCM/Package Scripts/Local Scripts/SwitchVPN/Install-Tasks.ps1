@@ -30,7 +30,7 @@ $LogDir = "C:\USS\Logs\Packages\SwitchVPN"
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Install-Tasks-UNKNOWN.ps1"
+	$_scriptName = "Install-Tasks.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 
@@ -48,7 +48,7 @@ $EventsAndTasks = @(
 		EventSource = "SwitchVPNProfile-General"		
 		EventID = 1000									
 		TaskName = "USS-SwitchVPNProfile-General"
-		TaskDescription = "Switches VPN client to the General profile when triggered."
+		TaskDescription = "Switches VPN client to the General profile when triggered. Source: SwitchVPN package."
 		Execute = "general.cmd"
 		Argument = $null
 		WorkingDirectory = "C:\USS\Scripts\Admin\SwitchVPN"
@@ -57,7 +57,7 @@ $EventsAndTasks = @(
 		EventSource = "SwitchVPNProfile-AlwaysOn"			
 		EventID = 1000										
 		TaskName = "USS-SwitchVPNProfile-AlwaysOn"
-		TaskDescription = "Switches VPN client to the Always On profile when triggered."
+		TaskDescription = "Switches VPN client to the Always On profile when triggered. Source: SwitchVPN package."
 		Execute = "alwayson.cmd"
 		Argument = $null
 		WorkingDirectory = "C:\USS\Scripts\Admin\SwitchVPN"
