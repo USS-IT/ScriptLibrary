@@ -13,6 +13,8 @@
 	Path to store any previously set static DNS settings. Default: C:\TEMP\SwitchDNS.json
 .PARAMETER Mode
 	Sets the change mode: Toggle, Add, or Reset. Default: Toggle
+.PARAMETER ResetOnStartup
+	When changing DNS, add a scheduled task to reset it once on startup.
 .PARAMETER Notify
 	Invokes an event-based task to notify the current user.
 .PARAMETER LogDir
@@ -32,10 +34,15 @@ param(
 	[ValidateSet('Toggle','Add','Reset')]
 	[string] $Mode='Toggle',
 	
+	[switch] $ResetOnStartup,
+		
 	[switch] $Notify,
 	
 	[string] $LogDir = "C:\USS\Logs\Packages\SwitchDNS"
 )
+
+# Task name for the on startup reset task.
+$ResetTaskName = "USS-SwitchDNS-Reset"
 
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
@@ -82,13 +89,19 @@ try {
 					$prevDNS = $prevDNS | ConvertFrom-Json | where {$DNSServers.IPAddressToString -notcontains $_}
 				}
 			}
+			
 			if ($prevDNS -ne $null -And -Not [string]::IsNullOrWhitespace(($prevDNS | Select -First 1))) {
 				Write-Host "Reverting to previous DNS [$($prevDNS -join ',')]"
-				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS
+				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS -ErrorAction Stop
 				Clear-Content $StaticDNSJson
 			} else {
 				Write-Host "Reverting to DHCP DNS"
-				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses
+				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction Stop
+			}
+			
+			# Unregister reset task if it exists.
+			if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
+				Unregister-ScheduledTask -TaskName $ResetTaskName -Confirm:$false
 			}
 			
 			if ($Notify) {
@@ -100,27 +113,68 @@ try {
 		
 			# Check if we have any statically added DNS already.
 			$key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
-			$staticDNS = Get-ItemProperty $key | Select -ExpandProperty NameServer
+			$staticDNS = Get-ItemProperty $key -ErrorAction Stop | Select -ExpandProperty NameServer
 			if (-Not [string]::IsNullOrEmpty($staticDNS)) {
 				Write-Host "Current static DNS: $staticDNS"
-				$dir = Split-Path -Parent $StaticDNSJson
+				$dir = Split-Path -Parent $StaticDNSJson -ErrorAction Stop
 				if (-not (Test-Path $dir -PathType Container)) {
-					$null = New-Item -Path $dir -ItemType Directory
+					$null = New-Item -Path $dir -ItemType Directory -ErrorAction Stop
 				}
 				$staticDNS = $staticDNS -split ',' | where {$DNSServers.IPAddressToString -notcontains $_}
 				if (($staticDNS | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($staticDNS | Select -First 1))) {
 					Write-Host "Saving static DNS to [$StaticDNSJson]: $($staticDNS -join ',')"
-					Set-Content -Path $StaticDNSJson -Value ($currentDns | ConvertTo-Json)
+					Set-Content -Path $StaticDNSJson -Value ($currentDns | ConvertTo-Json) -ErrorAction Stop
 				}
 			}
-			
+
 			if ($DNSOverride) {
 				$newDNS = $DNSServers.IPAddressToString
 			} else {
 				$newDNS = @($currentDns) + $DNSServers.IPAddressToString
 			}
 			Write-Host "Setting DNS servers to: $($newDNS -join ',')"
-			Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $newDNS
+			Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $newDNS -ErrorAction Stop
+			
+			if ($ResetOnStartup) {				
+				if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
+					Write-Host "Scheduled task [$ResetTaskName] already exists. Not creating."
+				} else {
+					Write-Host "Creating AtStartup scheduled task to reset DNS..."
+					$scriptPath = $PSCommandPath
+					If ([string]::IsNullOrEmpty($scriptPath)) {
+						$scriptPath = "C:\USS\Scripts\Admin\SwitchDNS\Switch-DNS.ps1"
+					}
+				
+					$action = New-ScheduledTaskAction `
+						-Execute "powershell.exe" `
+						-Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode `"Reset`""
+					
+					$trigger = New-ScheduledTaskTrigger -AtStartup
+					
+					$principal = New-ScheduledTaskPrincipal `
+						-UserId "SYSTEM" `
+						-LogonType ServiceAccount `
+						-RunLevel Highest
+						
+					$settings = New-ScheduledTaskSettingsSet `
+						-AllowStartIfOnBatteries `
+						-DontStopIfGoingOnBatteries `
+						-StartWhenAvailable `
+						-ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+						-Hidden
+			
+					$task = Register-ScheduledTask `
+						-TaskName $ResetTaskName `
+						-Action $action `
+						-Trigger $trigger `
+						-Principal $principal `
+						-Settings $settings
+						-Description "Reverts DNS changes from Switch-DNS.ps1."
+						-Force
+
+					Write-Host "Scheduled task [$($task.TaskName)] created successfully."
+				}
+			}
 			
 			if ($Notify) {
 				Write-Host "Sending notification"
