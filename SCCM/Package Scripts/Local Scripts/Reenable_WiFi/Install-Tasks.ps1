@@ -52,7 +52,7 @@ $EventsAndTasks = @(
 		TaskName = "USS-Reenable_WiFi-Enable-WiFiAdapters"
 		TaskDescription = "Re-enables all wifi adapters. Source: Reenable_WiFi package"
 		Execute = "powershell.exe"
-		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify"
+		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify -Force"
 		#WorkingDirectory = ""
 	},
 	

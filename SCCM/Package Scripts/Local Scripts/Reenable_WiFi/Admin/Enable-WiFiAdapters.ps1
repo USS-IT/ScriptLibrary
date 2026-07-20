@@ -3,6 +3,8 @@
     Re-enables all disabled wireless adapters.
 .DESCRIPTION
     Re-enables all disabled wireless adapters.
+.PARAMETER Force
+	Attempt to re-enable all wireless adapters, regardless if they're up or not.
 .PARAMETER Notify
 	Invokes an event-based notification script to notify the current user.
 .PARAMETER LogDir
@@ -15,7 +17,10 @@
 #>
 #Requires -RunAsAdministrator
 param(
+	[switch] $Force,
+	
 	[switch] $Notify,
+	
 	[string] $LogDir = "C:\USS\Logs\Packages\Reenable_WiFi"
 )
 
@@ -38,9 +43,14 @@ Write-Host ("Network adapters currently up: " + ($adapters.InterfaceDescription 
 $doFallback = $true
 try {
 	# Try using WMI first.
-	$adapters = Get-CimInstance Win32_NetworkAdapter -Filter "PhysicalAdapter = True AND ((Name like '%Wi-Fi%' OR Name like '%WiFi%' OR Name like '%Wireless%') OR (Description like '%Wi-Fi%' OR Description like '%WiFi%' OR Description like '%Wireless%') OR NetConnectionID = 'Wi-Fi' OR NetConnectionID = 'WiFi' OR NetConnectionID = 'Wireless')" -ErrorAction Stop
+	$filter = "PhysicalAdapter = True AND ((Name like '%Wi-Fi%' OR Name like '%WiFi%' OR Name like '%Wireless%') OR (Description like '%Wi-Fi%' OR Description like '%WiFi%' OR Description like '%Wireless%') OR NetConnectionID = 'Wi-Fi' OR NetConnectionID = 'WiFi' OR NetConnectionID = 'Wireless')"
+	# If -Force is not given, only include ones reporting they're disabled.
+	if (-Not $Force) {
+		$filter += " AND (NetEnabled = False OR NetConnectionStatus = 0)"
+	}
+	$adapters = Get-CimInstance Win32_NetworkAdapter -Filter $filter -ErrorAction Stop
 	If ($adapters -eq $null -Or ($adapters | Measure).Count -le 0) {
-		Write-Host "No wireless adapters found from WMI."
+		Write-Host "No disabled wireless adapters found from WMI."
 	} else {
 		$doRecheck = $false
 		$adapter = $null
@@ -88,12 +98,23 @@ try {
 # Fallback to Enable-NetAdapter if needed.
 if ($doFallback) {
 	Write-Host "Falling back to Get-NetAdapter"
-	$adapters = Get-NetAdapter -Physical | where {($_.Status -eq 'Disabled' -Or $_.Status -eq 'Not Present') -And ($_.NdisPhysicalMedium -eq '802.11' -Or $_.InterfaceDescription -match 'Wi-?Fi|Wireless' -or $_.Name -match 'Wi-?Fi|Wireless')}
+	$adapters = Get-NetAdapter -Physical | where {($_.NdisPhysicalMedium -eq '802.11' -Or $_.InterfaceDescription -match 'Wi-?Fi|Wireless' -or $_.Name -match 'Wi-?Fi|Wireless')}
+	if (-Not $Force) {
+		$adapters = $adapters | where {($_.Status -eq 'Disabled' -Or $_.Status -eq 'Not Present')}
+	}
 	if (($adapters | Measure).Count -eq 0) {
-		Write-Host "No disabled wireless adapters found"
-		if ($Notify) {
-			Write-Host "Sending notification"
-			Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-Reenable_WiFi-Missing' -EventID 1000 -EntryType Information -Message 'Notify no disabled WiFi adapters found'
+		if ($Force) {
+			Write-Host "No wireless adapters found"
+			if ($Notify) {
+				Write-Host "Sending notification"
+				Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-Reenable_WiFi-Missing' -EventID 1000 -EntryType Information -Message 'Notify no WiFi adapters found'
+			}
+		} else {
+			Write-Host "No disabled wireless adapters found"
+			if ($Notify) {
+				Write-Host "Sending notification"
+				Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-Reenable_WiFi-Missing' -EventID 1000 -EntryType Information -Message 'Notify no disabled WiFi adapters found'
+			}
 		}
 	} else {
 		foreach ($adapter in $adapters) {
