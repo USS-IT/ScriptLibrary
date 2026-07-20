@@ -95,7 +95,7 @@ try {
 	Write-Error $_
 }
 
-# Fallback to Enable-NetAdapter if needed.
+# Fallback to Enable-NetAdapter if needed. This can also re-enable multiple adapters.
 if ($doFallback) {
 	Write-Host "Falling back to Get-NetAdapter"
 	$adapters = Get-NetAdapter -Physical | where {($_.NdisPhysicalMedium -eq '802.11' -Or $_.InterfaceDescription -match 'Wi-?Fi|Wireless' -or $_.Name -match 'Wi-?Fi|Wireless')}
