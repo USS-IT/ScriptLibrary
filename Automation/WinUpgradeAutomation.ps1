@@ -62,10 +62,9 @@ param(
 		
 # -- START CONFIGURATION --
 # This should be the previous version before the latest build version.
-$EOLVER=22621		# Windows 11, 22H2
+$EOLVER=26100		# Windows 11, 24H2
 # This should be the version offered in the upgrade.
-$UPGRADEVER=22631	# Windows 11, 23H2
-# $UPGRADEVER=26100   # Windows 11, 24H2
+$UPGRADEVER=26200   # Windows 11, 25H2
 # The searchbase to search for matching computers in AD.
 $SEARCHBASE = "OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu"
 # Array of OUs to always exclude
@@ -147,7 +146,7 @@ $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # $EMAIL_FOOTER_HTML
 $EMAIL_INTRO_HTML = @"
 <p>This is an automated message.</p>
-<p>You are receiving this email because your system{0} is currently running Windows 10 or an older version of Windows 11, and it needs to be upgraded.</p>
+<p>You are receiving this email because your system{0} is currently running older version of Windows 11, and it needs to be upgraded.</p>
  
 <p>Starting on <b>August 12th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
 
@@ -791,6 +790,11 @@ $skipped_systems = $processed_systems | Select * -ExcludeProperty ADUser | where
 $skipped_systems | Export-CSV -NoTypeInformation -Force $EXPORT_SKIPPED_SYSTEMS_PATH
 Write-Host("[{0}] Exported report of {1} skipped systems to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($skipped_systems | Measure).Count, $EXPORT_SKIPPED_SYSTEMS_PATH)
 
+# Export systems that have no contact users.
+$nocontact_systems = $processed_systems | where {$_.ContactUser -notmatch "@" -And $_.SkippedReason -notmatch "Excluded" -And -Not $_.IsIncompatible -And -Not $_.IsStale}
+$nocontact_systems | Export-CSV -NoTypeInformation -Force $EXPORT_NOCONTACT_SYSTEMS_PATH
+Write-Host("[{0}] Exported report of {1} systems without contact users to [{2}]." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), (nocontact_systems | Measure).Count, $EXPORT_NOCONTACT_SYSTEMS_PATH)
+
 # Loop over each user and compose an email (unless -DryRun is given).
 $success_email_count = 0
 $failed_email_count = 0
@@ -1082,7 +1086,7 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_GROUP)) {
 				# This group should never be nested, so we can use this method.
 				$groupMembers = Get-ADUser -LDAPFilter "(memberOf=$($group.distinguishedname))"
 				if (($groupMembers | Measure).Count -le 0) {
-					Write-Host("[{0}] Group is currently empty." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
+					Write-Host("[{0}] Group currently has no users." -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"))
 				} else {
 					$removeGroupMembers = $groupMembers | where {$_.distinguishedname -notin $users}
 					Write-Host("[{0}] Removing {1} out of {2} members from group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), ($removeGroupMembers | Measure).Count, ($groupMembers | Measure).Count, $NOTIFICATION_GROUP)
