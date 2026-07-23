@@ -1,13 +1,35 @@
 <#
-Uninstalls the SCCM client, then restarts.
-
-Exit codes:
-0 - Success
->0 - Error codes from ccmsetup.exe
--1 - Error starting ccmsetup.exe
--2 - Ccmexec service still exists after uninstall finished
+.SYNOPSIS
+    Uninstalls the SCCM client, then optionally restarts.
+.DESCRIPTION
+    Uninstalls the SCCM client, then optionally restarts.
+.PARAMETER Notify
+	Invokes an event-based notification script to notify the current user after restart.
+.PARAMETER NoRestart
+	Exit instead of restarting.
+.PARAMETER LogDir
+	Directory for logging. Default is C:\USS\Logs.
+.OUTPUTS
+	0 - Success
+	>0 - Error codes from ccmsetup.exe
+	-1 - Error starting ccmsetup.exe
+	-2 - Ccmexec service still exists after uninstall finished
+.NOTES
+	Author: Matt Carras (mcarras8)
+	Created: 07-23-2026
+	
+	Logs to C:\USS\Logs\Remove-MCMClient.ps1.log by default.
+	
+	Requires Administrator privileges.
 #>
 #Requires -RunAsAdministrator
+param(
+	[switch] $Notify,
+	
+	[switch] $NoRestart,
+	
+	[string] $LogDir = "C:\USS\Logs"
+)
 
 $SetupTimeoutMin = 30
 $RestartSec = 300
@@ -217,7 +239,12 @@ if ($svcCcmExec -And [string]::IsNullOrEmpty($mcmVersion)) {
 	exit -2
 }
 
-shutdown.exe /r /t $RestartSec /c "SCCM client removal completed. Please restart the system. If the system is not restarted sooner, it will automatically restart in $($RestartSec / 60) minutes."
+if ($NoRestart) {
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] -NoRestart given. Exiting with return code 0."
+} else {
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Restarting in $($RestartSec / 60) minutes."
+	shutdown.exe /r /t $RestartSec /c "SCCM client removal completed. Please restart the system. If the system is not restarted sooner, it will automatically restart in $($RestartSec / 60) minutes."
+}
 
 Stop-Transcript | Out-Null
 exit 0
