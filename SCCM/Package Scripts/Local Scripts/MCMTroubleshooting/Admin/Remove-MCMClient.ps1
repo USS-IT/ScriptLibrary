@@ -34,7 +34,6 @@ param(
 $SetupTimeoutMin = 30
 $RestartSec = 300
 $WmiTimeoutMin = 5
-$LogDir = "C:\USS\Logs"
 $CCMLogPath = "$env:windir\ccmsetup\Logs\ccmsetup.log"
 
 # Create the log path if it doesn't already exist
