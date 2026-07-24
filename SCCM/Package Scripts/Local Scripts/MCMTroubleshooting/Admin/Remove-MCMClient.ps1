@@ -1,17 +1,23 @@
 <#
 .SYNOPSIS
-    Uninstalls the SCCM client, then optionally restarts.
+    Uninstalls the SCCM client, then restarts.
 .DESCRIPTION
-    Uninstalls the SCCM client, then optionally restarts.
+    Uninstalls the SCCM client, then restarts.
+	
+	- Watches the ccmsetup.log file to determine when the client is done uninstalling. Error if both the service and registry product version still exist after an uninstall attempt.
+	- The main reinstall script checks if either Ccmexec does not exist, or the MCM client version in the registry is older or does not exist.
+	- If the script can't find ccmsetup.exe to start the process, but ccmexec and the client version still exist, it will attempt to remove the ccmexec service.
 .PARAMETER NoRestart
 	Exit instead of restarting.
+.PARAMETER CodeFile
+	Check the given code file path against the weekly code (from Get-WeeklyRemovalCode.ps1).
 .PARAMETER LogDir
 	Directory for logging. Default is C:\USS\Logs.
 .OUTPUTS
 	0 - Success
-	>0 - Error codes from ccmsetup.exe
-	-1 - Error starting ccmsetup.exe
-	-2 - Ccmexec service still exists after uninstall finished
+	>0 - Failure codes from ccmsetup.exe
+	-1 - Failed to remove ccmexec service after confirming ccmsetup.exe does not exist
+	-2 - Ccmexec service and MCM client version still exist after uninstall finished
 .NOTES
 	Author: Matt Carras (mcarras8)
 	Created: 07-23-2026
@@ -24,13 +30,21 @@
 param(	
 	[switch] $NoRestart,
 	
+	[string] $CodeFile,
+	
 	[string] $LogDir = "C:\USS\Logs"
 )
+
+# ----------------------------
+# Configuration
+# ----------------------------
 
 $SetupTimeoutMin = 30
 $RestartSec = 300
 $WmiTimeoutMin = 5
 $CCMLogPath = "$env:windir\ccmsetup\Logs\ccmsetup.log"
+
+# -- END CONFIGURATION --
 
 # Create the log path if it doesn't already exist
 if (-not (Test-Path $LogDir -PathType Container)) {
@@ -43,6 +57,42 @@ try {
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 Start-Transcript $LogPath -Force
+
+# ----------------------------
+# Helper functions
+# ----------------------------
+
+function Get-WeeklyCode {
+	# Return a 4 digit code that rotates every Sunday.
+	
+    param(
+        [string]$Secret = 'JHU-MCM-Removal-Salt'
+    )
+
+    $Today = (Get-Date).ToUniversalTime()
+
+    # Get this week's Sunday
+    $WeekStart = $Today.Date.AddDays(-[int]$Today.DayOfWeek)
+
+    # Example: 20260719
+    $WeekKey = $WeekStart.ToString('yyyyMMdd')
+
+    # Combine with secret
+    $InputString = "$WeekKey|$Secret"
+
+    # SHA256 hash
+    $Sha = [System.Security.Cryptography.SHA256]::Create()
+    $Bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
+    $Hash = $Sha.ComputeHash($Bytes)
+
+    # Convert first 4 bytes to an integer
+	$Number = [BitConverter]::ToUInt32($Hash, 0)
+
+    # Force into range 0000-9999
+    $Code = $Number % 10000
+
+    return $Code.ToString('0000')
+}
 
 function Get-CCMSetupReturnCode {
 	# Return the return code from ccmsetup if it exited after the recorded start time, otherwise return $false.
@@ -197,6 +247,7 @@ if ($ccmSetupMissing) {
 			}
 		} catch {
 			Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Failed to remove ccmexec service: $_"
+			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -1"
 			Stop-Transcript | Out-Null
 			exit -1
 		}
@@ -219,11 +270,13 @@ if ($ccmSetupMissing) {
 						break
 					} elseif ($returnCode -eq 8) {
 						$msg = 
-						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
+						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
+						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
 						Stop-Transcript | Out-Null
 						exit $returnCode
 					} else {
-						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info."
+						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info. Exiting with return code $returnCode."
+						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
 						Stop-Transcript | Out-Null
 						exit $returnCode
 					}
@@ -277,16 +330,18 @@ if ($ccmSetupMissing) {
 
 if ($svcCcmExec -And -Not [string]::IsNullOrEmpty($mcmVersion)) {
 	Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmexec service and MCM client version both still exist after uninstall attempt. This will prevent the MCM client script from running on startup. Try running this script again."
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -2"
 	Stop-Transcript | Out-Null
 	exit -2
 }
 	
 if ($NoRestart) {
-	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] -NoRestart given. Exiting with return code 0."
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] -NoRestart given, skipping restart."
 } else {
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Restarting in $($RestartSec / 60) minutes."
 	shutdown.exe /r /t $RestartSec /c "SCCM client removal completed. Please restart the system. If the system is not restarted sooner, it will automatically restart in $($RestartSec / 60) minutes."
 }
 
+Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code 0"
 Stop-Transcript | Out-Null
 exit 0
