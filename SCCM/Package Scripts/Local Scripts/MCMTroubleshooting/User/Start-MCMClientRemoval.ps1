@@ -9,6 +9,9 @@
 # - Display only transcript body, excluding Start-Transcript and Stop-Transcript blocks
 # - Refresh SCCM status labels after Stop-Transcript end marker is detected
 # - Timeout after 30 minutes
+#
+# Author: Matt Carras (mcarras8)
+# Created: 7-24-26
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
