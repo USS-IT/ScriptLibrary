@@ -20,7 +20,7 @@ $hopkinsDomains = @(
 $addlNameservers = @(
 	'8.8.8.8',
 	'1.1.1.1'
-}
+)
 
 # Global variable to track running job and last operation
 $script:currentJob = $null
