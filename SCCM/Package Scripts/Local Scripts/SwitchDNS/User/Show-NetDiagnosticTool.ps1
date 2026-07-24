@@ -1,38 +1,142 @@
-# Interactive network diagnostic tool
-# - nslookup
-# - 
+# Interactive network diagnostic tool for standard users
+#
+# - nslookup (with public DNS fallback)
+# - ipconfig /flushdns
+# - traceroute
+#
+# Author: Matt Carras (mcarras8)
+# Created: 7-24-26
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Define Hopkins domains
-$hopkinsDomains = @(
+# ----------------------------
+# Configuration
+# ----------------------------
+
+# Define selectable addresses in dropdown
+$SelectableAddresses = @(
 	"vpn.jh.edu",
     "jhu.edu",
     "johnshopkins.edu",
     "hopkinsmedicine.org",
-	"login.johnshopkins.edu",
+	"login.jh.edu",
 	"login.microsoftonline.com",
 	"microsoft.com"
 )
 
-# Define additional name servers to check against.
-$addlNameservers = @(
+# Define additional public DNS to check DNS against.
+$AddlPublicDNS = @(
 	'8.8.8.8',
 	'1.1.1.1'
 )
+
+# Title for the form and message boxes.
+$UITitle = "IT Network Diagnostics"
+
+$LogDir = "C:\USS\Logs\User\SwitchDNS"
+# -- END Configuration --
+
+# Create the log path if it doesn't already exist
+if (-not (Test-Path $LogDir -PathType Container)) {
+	$null = New-Item -Path $LogDir -ItemType Directory
+}
+try {
+	$_scriptName = Split-Path -Leaf $PSCommandPath
+} catch {
+	$_scriptName = "Show-NetDiagnosticTool.ps1"
+}
+$LogPath = "$LogDir\$($_scriptName).log"
+Start-Transcript $LogPath -Force
+
+# Use WScript popup instead of MessageBox static calls
+$script:Popup = New-Object -ComObject WScript.Shell
+
+# Row number -> controls in that row
+$script:ControlRows = @{}
+
+# Create the main script form.
+$FormMain = New-Object System.Windows.Forms.Form
+
+# ----------------------------
+# Helper functions
+# ----------------------------
+
+function Add-FormControl {
+	# Add a new control to our main form.
+    param(
+		[Parameter(Mandatory=$true, Position=0)]
+        [System.Windows.Forms.Control]$Control,
+		
+		[Parameter(Mandatory=$true, Position=1)]
+        [int]$Row
+    )
+
+    if (-not $script:ControlRows.ContainsKey($Row)) {
+        $script:ControlRows[$Row] = New-Object System.Collections.ArrayList
+    }
+
+	[void]$script:ControlRows[$Row].Add($Control)
+	[void]$script:FormMain.Controls.Add($Control)
+}
+
+function Get-ControlRelativeLocation {
+	# Get the relative Location point for the given row for Windows Forms.
+    param(
+		[Parameter(Mandatory=$true, Position=0)]
+        [int]$Row,
+				
+        [int]$Spacing = 10,
+		
+        [int]$MarginLeft = 10,
+		
+        [int]$MarginTop = 10
+    )
+
+	$X = $MarginLeft
+	$Y = $MarginTop
+    # First control on first row
+    if (-not $script:ControlRows.ContainsKey($Row) -Or $script:ControlRows[$Row].Count -eq 0) {		
+		if ($script:ControlRows.ContainsKey($Row - 1)) {
+			$PreviousRow = $script:ControlRows[$Row - 1]
+			if ($PreviousRow.Count -gt 0) {
+				$TallestBottom = (
+					$PreviousRow |
+					ForEach-Object { $_.Bottom } |
+					Measure-Object -Maximum
+				).Maximum
+
+				$Y = $TallestBottom + $Spacing
+			}
+		}
+    } else {
+		$LastControl =
+			$script:ControlRows[$Row][
+				$script:ControlRows[$Row].Count - 1
+			]
+			
+		$X = $LastControl.Right + $Spacing
+		$Y = $LastControl.Top
+	}
+
+    return New-Object System.Drawing.Point($X, $Y)
+}
+
+# -- END FUNCTIONS --
+
+# -- START MAIN SCRIPT --
 
 # Global variable to track running job and last operation
 $script:currentJob = $null
 $script:lastOperation = "DNS"  # Default operation type for filename
 
 # Create the main form
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "IT Network Diagnostics"
-$form.Size = New-Object System.Drawing.Size(800, 600)
-$form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedDialog"
-$form.MaximizeBox = $false
+$FormMain = New-Object System.Windows.Forms.Form
+$FormMain.Text = $UITitle
+$FormMain.Size = New-Object System.Drawing.Size(800, 600)
+$FormMain.StartPosition = "CenterScreen"
+$FormMain.FormBorderStyle = "FixedDialog"
+$FormMain.MaximizeBox = $false
 
 # Define margins and spacing
 $marginLeft = 10
@@ -40,105 +144,105 @@ $marginTop = 10
 $spacing = 10
 $buttonHeight = 30
 $labelHeight = 20
-$currentY = $marginTop
 
-# Create domain selection label
-$labelDomain = New-Object System.Windows.Forms.Label
-$labelDomain.Location = New-Object System.Drawing.Point($marginLeft, $currentY)
-$labelDomain.Size = New-Object System.Drawing.Size(150, $labelHeight)
-$labelDomain.Text = "Select Hopkins Domain:"
-$form.Controls.Add($labelDomain)
+# Row 0
+$row = 0
+# Create address selection label
+$labelSelectAddress = New-Object System.Windows.Forms.Label
+$labelSelectAddress.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
+$labelSelectAddress.Size = New-Object System.Drawing.Size(150, $labelHeight)
+$labelSelectAddress.Text = "Select Address to Check:"
+Add-FormControl $labelSelectAddress $row
 
-# Create domain dropdown (positioned to the right of label)
-$comboBoxDomain = New-Object System.Windows.Forms.ComboBox
-$comboBoxDomain.Location = New-Object System.Drawing.Point(($labelDomain.Right + $spacing), $currentY)
-$comboBoxDomain.Size = New-Object System.Drawing.Size(200, $labelHeight)
-$comboBoxDomain.DropDownStyle = "DropDownList"
-foreach ($domain in $hopkinsDomains) {
-    $comboBoxDomain.Items.Add($domain) | Out-Null
+# Create address dropdown
+$comboBoxAddress = New-Object System.Windows.Forms.ComboBox
+$comboBoxAddress.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
+$comboBoxAddress.Size = New-Object System.Drawing.Size(200, $labelHeight)
+$comboBoxAddress.DropDownStyle = "DropDownList"
+foreach ($address in $SelectableAddresses) {
+    $comboBoxAddress.Items.Add($address) | Out-Null
 }
-$comboBoxDomain.Items.Add("-- Custom Address --") | Out-Null
-$comboBoxDomain.SelectedIndex = 0
-$form.Controls.Add($comboBoxDomain)
+$comboBoxAddress.Items.Add("-- Custom Address --") | Out-Null
+$comboBoxAddress.SelectedIndex = 0
+Add-FormControl $comboBoxAddress $row
 
-# Create custom address label (positioned to the right of dropdown)
+# Create custom address label
 $labelCustom = New-Object System.Windows.Forms.Label
-$labelCustom.Location = New-Object System.Drawing.Point(($comboBoxDomain.Right + 20), $currentY)
+$labelCustom.Location = Get-ControlRelativeLocation -Row $row -Spacing 20 -MarginLeft $marginLeft -MarginTop $marginTop
 $labelCustom.Size = New-Object System.Drawing.Size(100, $labelHeight)
 $labelCustom.Text = "Custom Address:"
 $labelCustom.Visible = $false
-$form.Controls.Add($labelCustom)
+Add-FormControl $labelCustom $row
 
-# Create custom address textbox (positioned to the right of custom label)
+# Create custom address textbox
 $textBoxCustom = New-Object System.Windows.Forms.TextBox
-$textBoxCustom.Location = New-Object System.Drawing.Point(($labelCustom.Right + $spacing), $currentY)
-$textBoxCustom.Size = New-Object System.Drawing.Size(($form.ClientSize.Width - $labelCustom.Right - $spacing - $marginLeft), $labelHeight)
+$textBoxCustom.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
+$textBoxCustom.Size = New-Object System.Drawing.Size(($FormMain.ClientSize.Width - $labelCustom.Right - $spacing - $marginLeft), $labelHeight)
 $textBoxCustom.Visible = $false
 $textBoxCustom.Text = ""
-$form.Controls.Add($textBoxCustom)
+Add-FormControl $textBoxCustom $row
 
-# Move to next row
-$currentY = $labelDomain.Bottom + $spacing
-
-# First row of buttons
+# Row 1
+$row++
 # Create DNS Check button
 $buttonDNS = New-Object System.Windows.Forms.Button
-$buttonDNS.Location = New-Object System.Drawing.Point($marginLeft, $currentY)
+$buttonDNS.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
 $buttonDNS.Size = New-Object System.Drawing.Size(140, $buttonHeight)
 $buttonDNS.Text = "Check DNS Servers"
 $buttonDNS.BackColor = [System.Drawing.Color]::LightBlue
-$form.Controls.Add($buttonDNS)
+Add-FormControl $buttonDNS $row
 
 # Create Traceroute button (positioned to the right of DNS button)
 $buttonTraceroute = New-Object System.Windows.Forms.Button
-$buttonTraceroute.Location = New-Object System.Drawing.Point(($buttonDNS.Right + $spacing), $currentY)
+$buttonTraceroute.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
 $buttonTraceroute.Size = New-Object System.Drawing.Size(140, $buttonHeight)
 $buttonTraceroute.Text = "Perform Traceroute"
 $buttonTraceroute.BackColor = [System.Drawing.Color]::LightGreen
-$form.Controls.Add($buttonTraceroute)
+Add-FormControl $buttonTraceroute $row
 
 # Create Flush DNS button (positioned to the right of Traceroute button)
 $buttonFlushDNS = New-Object System.Windows.Forms.Button
-$buttonFlushDNS.Location = New-Object System.Drawing.Point(($buttonTraceroute.Right + $spacing), $currentY)
+$buttonFlushDNS.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
 $buttonFlushDNS.Size = New-Object System.Drawing.Size(100, $buttonHeight)
 $buttonFlushDNS.Text = "Flush DNS"
 $buttonFlushDNS.BackColor = [System.Drawing.Color]::LightYellow
-$form.Controls.Add($buttonFlushDNS)
+Add-FormControl $buttonFlushDNS $row
 
-# Create Cancel button (positioned to the right of Flush DNS button)
+# Row 3
+$row++
+# Create Save Log button 
+$buttonSaveLog = New-Object System.Windows.Forms.Button
+$buttonSaveLog.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
+$buttonSaveLog.Size = New-Object System.Drawing.Size(100, $buttonHeight)
+$buttonSaveLog.Text = "Save Log"
+$buttonSaveLog.BackColor = [System.Drawing.Color]::LightCyan
+Add-FormControl $buttonSaveLog $row
+
+# Create Clear button 
+$buttonClear = New-Object System.Windows.Forms.Button
+$buttonClear.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
+$buttonClear.Size = New-Object System.Drawing.Size(100, $buttonHeight)
+$buttonClear.Text = "Clear Results"
+$buttonClear.BackColor = [System.Drawing.Color]::LightCoral
+Add-FormControl $buttonClear $row
+
+# Create Cancel button 
 $buttonCancel = New-Object System.Windows.Forms.Button
-$buttonCancel.Location = New-Object System.Drawing.Point(($buttonFlushDNS.Right + $spacing), $currentY)
+$buttonCancel.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
 $buttonCancel.Size = New-Object System.Drawing.Size(100, $buttonHeight)
 $buttonCancel.Text = "Cancel"
 $buttonCancel.BackColor = [System.Drawing.Color]::Orange
 $buttonCancel.Enabled = $false
-$form.Controls.Add($buttonCancel)
+Add-FormControl $buttonCancel $row
 
-# Create Save Log button (positioned to the right of Cancel button)
-$buttonSaveLog = New-Object System.Windows.Forms.Button
-$buttonSaveLog.Location = New-Object System.Drawing.Point(($buttonCancel.Right + $spacing), $currentY)
-$buttonSaveLog.Size = New-Object System.Drawing.Size(100, $buttonHeight)
-$buttonSaveLog.Text = "Save Log"
-$buttonSaveLog.BackColor = [System.Drawing.Color]::LightCyan
-$form.Controls.Add($buttonSaveLog)
-
-# Create Clear button (positioned to the right of Save Log button)
-$buttonClear = New-Object System.Windows.Forms.Button
-$buttonClear.Location = New-Object System.Drawing.Point(($buttonSaveLog.Right + $spacing), $currentY)
-$buttonClear.Size = New-Object System.Drawing.Size(100, $buttonHeight)
-$buttonClear.Text = "Clear Results"
-$buttonClear.BackColor = [System.Drawing.Color]::LightCoral
-$form.Controls.Add($buttonClear)
-
-# Move to next row for results textbox
-$currentY = $buttonDNS.Bottom + $spacing
-
+# Row 4
+$row++
 # Create results text box (fills remaining space)
 $textBoxResults = New-Object System.Windows.Forms.TextBox
-$textBoxResults.Location = New-Object System.Drawing.Point($marginLeft, $currentY)
+$textBoxResults.Location = Get-ControlRelativeLocation -Row $row -MarginLeft $marginLeft -MarginTop $marginTop
 $textBoxResults.Size = New-Object System.Drawing.Size(
-    ($form.ClientSize.Width - (2 * $marginLeft)),
-    ($form.ClientSize.Height - $currentY - $marginLeft)
+    ($FormMain.ClientSize.Width - $textBoxResults.Location.X - (2 * $marginLeft)), 
+	($FormMain.ClientSize.Height - $textBoxResults.Location.Y - $marginTop)
 )
 $textBoxResults.Multiline = $true
 $textBoxResults.ScrollBars = "Vertical"
@@ -148,15 +252,15 @@ $textBoxResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor
                          [System.Windows.Forms.AnchorStyles]::Bottom -bor 
                          [System.Windows.Forms.AnchorStyles]::Left -bor 
                          [System.Windows.Forms.AnchorStyles]::Right
-$form.Controls.Add($textBoxResults)
+Add-FormControl $textBoxResults $row
 
 # Create a timer for updating job output
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 250  # Update every 250ms
 
 # Event handler for dropdown selection change
-$comboBoxDomain.Add_SelectedIndexChanged({
-    if ($comboBoxDomain.SelectedItem -eq "-- Custom Address --") {
+$comboBoxAddress.Add_SelectedIndexChanged({
+    if ($comboBoxAddress.SelectedItem -eq "-- Custom Address --") {
         $labelCustom.Visible = $true
         $textBoxCustom.Visible = $true
         $textBoxCustom.Focus()
@@ -166,47 +270,6 @@ $comboBoxDomain.Add_SelectedIndexChanged({
         $textBoxCustom.Visible = $false
     }
 })
-
-# Function to get the target address (either from dropdown or custom input)
-function Get-TargetAddress {
-    if ($comboBoxDomain.SelectedItem -eq "-- Custom Address --") {
-        $customAddr = $textBoxCustom.Text.Trim()
-        if ([string]::IsNullOrWhiteSpace($customAddr)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Please enter a custom address (domain or IP).",
-                "Input Required",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return $null
-        }
-        return $customAddr
-    }
-    else {
-        return $comboBoxDomain.SelectedItem
-    }
-}
-
-# Function to validate if input is an IP address
-function Test-IsIPAddress {
-    param ([string]$Address)
-    
-    $ipPattern = '^(\d{1,3}\.){3}\d{1,3}$'
-    return $Address -match $ipPattern
-}
-
-# Function to enable/disable buttons during job execution
-function Set-ButtonState {
-    param([bool]$Running)
-    
-    $buttonDNS.Enabled = -not $Running
-    $buttonTraceroute.Enabled = -not $Running
-    $buttonFlushDNS.Enabled = -not $Running
-    $buttonCancel.Enabled = $Running
-    $buttonSaveLog.Enabled = -not $Running
-    $comboBoxDomain.Enabled = -not $Running
-    $textBoxCustom.Enabled = -not $Running
-}
 
 # Timer tick event to check job status and update output
 $timer.Add_Tick({
@@ -243,7 +306,7 @@ $timer.Add_Tick({
             $script:currentJob = $null
             $timer.Stop()
             Set-ButtonState -Running $false
-            $form.Cursor = [System.Windows.Forms.Cursors]::Default
+            $FormMain.Cursor = [System.Windows.Forms.Cursors]::Default
         }
     }
 })
@@ -262,14 +325,21 @@ $buttonDNS.Add_Click({
     $textBoxResults.Text += "=" * 80 + "`r`n`r`n"
     
     Set-ButtonState -Running $true
-    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $FormMain.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     
     # Start DNS check as a background job
     $script:currentJob = Start-Job -ScriptBlock {
-        param($target, $isIP)
+        param($target, $isIP, $AddlDNS)
         
         function Get-ActiveDNSServers {
-            $results = @()
+			# Return a hashtable with activeAdapters and uniqueDNSServers.	
+			param ()
+			
+			$results = @{
+				"activeAdapters" = @()
+				"uniqueDNSServers" = @()
+			}
+			
             $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
             
             foreach ($adapter in $adapters) {
@@ -277,18 +347,26 @@ $buttonDNS.Add_Click({
                               Where-Object { $_.ServerAddresses.Count -gt 0 }
                 
                 if ($dnsServers -and $dnsServers.ServerAddresses) {
-                    $results += [PSCustomObject]@{
-                        AdapterName = $adapter.Name
-                        InterfaceDescription = $adapter.InterfaceDescription
-                        DNSServers = $dnsServers.ServerAddresses
-                    }
-                }
+					$dnsServers = $dnsServers.ServerAddresses
+                    $results.uniqueDNSServers += $dnsServers
+                } else {
+					$dnsServers = $null
+				}
+				$results.activeAdapters += [PSCustomObject]@{
+					"Name" = $adapter.Name
+					"InterfaceDescription" = $adapter.InterfaceDescription
+					"dnsServers" = $dnsServers
+				}
             }
-            
+			
+			$results.uniqueDNSServers = $results.uniqueDNSServers | Select -Unique
+
             return $results
         }
         
         function Test-DNSResolution {
+			# Return a string result of whether the resolution failed or not.
+			
             param (
                 [string]$Domain,
                 [string]$DNSServer
@@ -310,68 +388,58 @@ $buttonDNS.Add_Click({
         }
         
         $dnsInfo = Get-ActiveDNSServers
-        
-        if ($dnsInfo.Count -eq 0) {
-            Write-Output "No active network adapters with DNS servers found.`r`n"
-        }
-        else {
-			if (($addlNameServers | Measure).Count -gt 0) {
-				$dnsInfo += [PSCustomObject]@{
-						AdapterName = "N/A"
-						InterfaceDescription = "Not an adapter - testing against public DNS servers"
-						DNSServers = $addlNameServers
-				}
+		
+		
+        if (($dnsInfo.activeAdapters | Measure).Count -eq 0) {
+            Write-Output "No active network adapters found.`r`n"
+        } else {
+			Write-Output ("-" * 80 + "`r`n")
+			foreach ($adapter in $dnsInfo.activeAdapters) {
+					Write-Output "`r`n"
+                    Write-Output "Active Adapter: $($adapter.Name)`r`n"
+                    Write-Output "Description: $($adapter.InterfaceDescription)`r`n"
+					Write-Output "DNS Servers: $($adapter.dnsServers -join ', ')`r`n"
 			}
-				
+			Write-Output ("-" * 80 + "`r`n")
+			
+			$dnsServers = $dnsInfo.uniqueDNSServers
+			if (($dnsServers | Measure).Count -eq 0) {
+				Write-Output "WARNING: No DNS servers found on active network adapters.`r`n"
+			}
+			if (($AddlDNS | Measure).Count -gt 0) {
+				$dnsServers = ($dnsServers + $AddlDNS) | Select -Unique
+			}
             if ($isIP) {
                 Write-Output "NOTE: Input appears to be an IP address. Performing reverse DNS lookup...`r`n`r`n"
-                
-                foreach ($adapter in $dnsInfo) {
-                    Write-Output "Adapter: $($adapter.AdapterName)`r`n"
-                    Write-Output "Description: $($adapter.InterfaceDescription)`r`n"
-                    Write-Output ("-" * 80 + "`r`n")
-                    
-                    foreach ($dnsServer in $adapter.DNSServers) {
-                        Write-Output "  DNS Server: $dnsServer`r`n"
-                        
-                        try {
-                            $ptrResult = Resolve-DnsName -Name $target -Server $dnsServer -Type PTR -ErrorAction Stop
-                            $hostname = $ptrResult | Select-Object -First 1 -ExpandProperty NameHost
-                            Write-Output "    Reverse Lookup: SUCCESS - Hostname: $hostname`r`n"
-                        }
-                        catch {
-                            Write-Output "    Reverse Lookup: FAILED - $($_.Exception.Message)`r`n"
-                        }
-                    }
-                    
-                    Write-Output "`r`n"
-                }
-            }
-            else {	
-                foreach ($adapter in $dnsInfo) {
-                    Write-Output "Adapter: $($adapter.AdapterName)`r`n"
-                    Write-Output "Description: $($adapter.InterfaceDescription)`r`n"
-                    Write-Output ("-" * 80 + "`r`n")
-                    
-                    foreach ($dnsServer in $adapter.DNSServers) {
-                        Write-Output "  DNS Server: $dnsServer`r`n"
-                        
-                        $resolution = Test-DNSResolution -Domain $target -DNSServer $dnsServer
-                        
-                        if ($resolution -match "FAILED") {
-                            Write-Output "    Resolution: $resolution`r`n"
-                        }
-                        else {
-                            Write-Output "    Resolution: SUCCESS - IP(s): $resolution`r`n"
-                        }
-                    }
-                    
-                    Write-Output "`r`n"
-                }
+
+				foreach ($dnsServer in $dnsServers) {
+					Write-Output "  DNS Server: $dnsServer`r`n"
+					
+					try {
+						$ptrResult = Resolve-DnsName -Name $target -Server $dnsServer -Type PTR -ErrorAction Stop
+						$hostname = $ptrResult | Select-Object -First 1 -ExpandProperty NameHost
+						Write-Output "    Reverse Lookup: SUCCESS - Hostname: $hostname`r`n"
+					}
+					catch {
+						Write-Output "    Reverse Lookup: FAILED - $($_.Exception.Message)`r`n"
+					}
+				}
+            } else {	
+				foreach ($dnsServer in $dnsServers) {
+					Write-Output "  DNS Server: $dnsServer`r`n"
+					
+					$resolution = Test-DNSResolution -Domain $target -DNSServer $dnsServer
+					
+					if ($resolution -match "FAILED") {
+						Write-Output "    Resolution: $resolution`r`n"
+					}
+					else {
+						Write-Output "    Resolution: SUCCESS - IP(s): $resolution`r`n"
+					}
+				}
             }
         }
-        
-    } -ArgumentList $selectedTarget, (Test-IsIPAddress -Address $selectedTarget)
+    } -ArgumentList $selectedTarget, (Test-IsIPAddress -Address $selectedTarget), $script:AddlPublicDNS
     
     $timer.Start()
 })
@@ -390,7 +458,7 @@ $buttonTraceroute.Add_Click({
     $textBoxResults.Text += "=" * 80 + "`r`n`r`n"
     
     Set-ButtonState -Running $true
-    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $FormMain.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     
     # Start traceroute as a background job
     $script:currentJob = Start-Job -ScriptBlock {
@@ -544,7 +612,7 @@ $buttonClear.Add_Click({
 })
 
 # Handle Ctrl+C in the form
-$form.Add_KeyDown({
+$FormMain.Add_KeyDown({
     if ($_.Control -and $_.KeyCode -eq 'C') {
         if ($script:currentJob -ne $null) {
             Stop-Job -Job $script:currentJob
@@ -554,14 +622,22 @@ $form.Add_KeyDown({
 })
 
 # Cleanup on form close
-$form.Add_FormClosing({
+$FormMain.Add_FormClosing({
     if ($script:currentJob -ne $null) {
         Stop-Job -Job $script:currentJob
         Remove-Job -Job $script:currentJob -Force
     }
     $timer.Stop()
     $timer.Dispose()
+	
+	try {
+		Stop-Transcript | Out-Null
+	} catch {}
 })
 
 # Show the form
-[void]$form.ShowDialog()
+[void]$FormMain.ShowDialog()
+
+try {
+	Stop-Transcript | Out-Null
+} catch {}
