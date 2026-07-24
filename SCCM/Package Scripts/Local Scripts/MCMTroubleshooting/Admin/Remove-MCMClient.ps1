@@ -3,8 +3,6 @@
     Uninstalls the SCCM client, then optionally restarts.
 .DESCRIPTION
     Uninstalls the SCCM client, then optionally restarts.
-.PARAMETER Notify
-	Invokes an event-based notification script to notify the current user after restart.
 .PARAMETER NoRestart
 	Exit instead of restarting.
 .PARAMETER LogDir
@@ -23,9 +21,7 @@
 	Requires Administrator privileges.
 #>
 #Requires -RunAsAdministrator
-param(
-	[switch] $Notify,
-	
+param(	
 	[switch] $NoRestart,
 	
 	[string] $LogDir = "C:\USS\Logs"
@@ -137,107 +133,154 @@ Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM Client Version (Registry)
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Ccmexec service status: $($svcCcmExec.Status)"
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] SMS_Client WMI Class Version: $($oSmsClient.ClientVersion)"
 
-Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Calling ccmsetup.exe /uninstall"
-
 $StartDateTime = (Get-Date)
 $TimeoutDate = (Get-Date).AddMinutes($SetupTimeoutMin)
-try {
-	$process = Start-Process `
-		-FilePath "$env:windir\ccmsetup\ccmsetup.exe" `
-		-ArgumentList "/uninstall" `
-		-WindowStyle Hidden `
-		-ErrorAction Stop
-	$handle = $process.Handle
-	$process | Wait-Process -Timeout ($SetupTimeoutMin*60)
-	$ccmExitCode = $process.ExitCode
-	if ($ccmExitCode -is [int]) {
-		$ccmExitCode = "exit code $ccmExitCode"
-	} else {
-		$ccmExitCode = "no exit code"
+
+Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Calling ccmsetup.exe /uninstall"
+$ccmSetupError = $false
+$ccmSetupMissing = $false
+if ((Test-Path "$env:windir\ccmsetup\ccmsetup.exe")) {
+	try {
+		$process = Start-Process `
+			-FilePath "$env:windir\ccmsetup\ccmsetup.exe" `
+			-ArgumentList "/uninstall" `
+			-WindowStyle Hidden `
+			-ErrorAction Stop
+		$handle = $process.Handle
+		$process | Wait-Process -Timeout ($SetupTimeoutMin*60)
+		$ccmExitCode = $process.ExitCode
+		if ($ccmExitCode -is [int]) {
+			$ccmExitCode = "exit code $ccmExitCode"
+		} else {
+			$ccmExitCode = "no exit code"
+		}
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe /uninstall exited with $ccmExitCode. Uninstall should be continuing in the background."
+	} catch {
+		Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe failed to start: $_"
+		$ccmSetupError = $true
 	}
-	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe /uninstall exited with $ccmExitCode. Uninstall should be continuing in the background. Exiting with code -1."
-} catch {
-	Write-Error $_
-	Stop-Transcript | Out-Null
-	exit -1
+} else {
+	Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] [$env:windir\ccmsetup\ccmsetup.exe] not found."
+	$ccmSetupError = $true
+	$ccmSetupMissing = $true
 }
 
+# If we can't start ccmsetup.exe, skip the log parsing.
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Waiting for MCM client uninstall to complete..."
 
-$logPathExists = $false
-while ((Get-Date) -lt $TimeoutDate) {
-    if ((Test-Path $CCMLogPath)) {
-		if (-Not $logPathExists) {
-			$logPathExists = $true
-			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Log path [$CCMLogPath] exists. Watching..."
-		}
-		$returnCode = Get-CCMSetupReturnCode $CCMLogPath $StartDateTime
-		
-        if ($returnCode -is [int]) {
-			if ($returnCode -eq 0) {
-				Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Ccmsetup exited with return code 0. MCM client uninstall completed successfully."
-				break
-			} elseif ($returnCode -eq 8) {
-				Write-Error "MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info. Returning ccmsetup exit code."
-				Stop-Transcript | Out-Null
-				exit $returnCode
-			} else {
-				Write-Error "MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info. Returning ccmsetup exit code."
-				Stop-Transcript | Out-Null
-				exit $returnCode
+# First, check if we couldn't start ccmsetup.
+if ($ccmSetupMissing) {
+	if ($svcCcmExec -And -Not [string]::IsNullOrEmpty($mcmVersion)) {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe does not exist, but ccmexec service and MCM client version still exist. This may impact reinstall. Removing Ccmexec service."
+		try {
+			# Stop service and wait for status to change.
+			Stop-Service CcmExec -Force
+			Start-Sleep -Seconds 5
+			$svcCcmExec = Get-Service CcmExec
+			$TimeoutDate = (Get-Date).AddMinutes(3)
+			while ((Get-Date) -lt $TimeoutDate -And $svcCcmExec.Status -eq 'Running') {
+				$svcCcmExec = Get-Service CcmExec
+				Start-Sleep -Seconds 5
 			}
+			if ((Get-Date) -ge $TimeoutDate) {
+				Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Timeout reached waiting for ccmexec service status change (waited 3 minutes). Current status: $($svcCcmExec.Status)"
+			}
+			sc.exe delete CcmExec
+			Start-Sleep -Seconds 10
+			$TimeoutDate = (Get-Date).AddMinutes(3)
+			while ((Get-Date) -lt $TimeoutDate -And $svcCcmExec) {
+				$svcCcmExec = Get-Service CcmExec -ErrorAction SilentlyContinue
+				Start-Sleep -Seconds 5
+			}
+			if ((Get-Date) -ge $TimeoutDate) {
+				Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Timeout reached waiting for ccmexec service to be removed (waited 3 minutes). Current status: $($svcCcmExec.Status)"
+			}
+		} catch {
+			Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Failed to remove ccmexec service: $_"
+			Stop-Transcript | Out-Null
+			exit -1
 		}
-    }
-
-    Start-Sleep -Seconds 15
-}
-
-if ((Get-Date) -ge $TimeoutDate) {
-    Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall wait reached $SetupTimeoutMin minute timeout."
-}
-
-Start-Sleep -Seconds 30
-
-# Additional validation before restart
-# Wait up to $WmiTimeoutMin (5 minutes) for WMI class to be removed.
-# This also helps wait for additional cleanup.
-$smsClientRemoved = $false
-$WmiTimeoutDate = (Get-Date).AddMinutes($WmiTimeoutMin)
-Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Waiting for SMS_Client WMI class to be removed..."
-while ((Get-Date) -lt $WmiTimeoutDate) {
-	$oSmsClient = Get-SMSClient
-	if (-Not $oSmsClient) {
-		$smsClientRemoved = $true
-		break
 	}
+} else {
+	if (-Not $ccmSetupError) {
+		# ccmsetup started successfully.
+		$logPathExists = $false
+		while ((Get-Date) -lt $TimeoutDate) {
+			if ((Test-Path $CCMLogPath)) {
+				if (-Not $logPathExists) {
+					$logPathExists = $true
+					Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Log path [$CCMLogPath] exists. Watching..."
+				}
+				$returnCode = Get-CCMSetupReturnCode $CCMLogPath $StartDateTime
+				
+				if ($returnCode -is [int]) {
+					if ($returnCode -eq 0) {
+						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Ccmsetup exited with return code 0. MCM client uninstall completed successfully."
+						break
+					} elseif ($returnCode -eq 8) {
+						$msg = 
+						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
+						Stop-Transcript | Out-Null
+						exit $returnCode
+					} else {
+						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info."
+						Stop-Transcript | Out-Null
+						exit $returnCode
+					}
+				}
+			}
+
+			Start-Sleep -Seconds 15
+		}
+
+		if ((Get-Date) -ge $TimeoutDate) {
+			Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall wait reached $SetupTimeoutMin minute timeout."
+		}
+	}
+
 	Start-Sleep -Seconds 15
-}
-if ($smsClientRemoved) {
-	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed SMS_Client WMI class was successfully removed by ccmsetup."
-} else {
-	Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] SMS_Client WMI class still exists with version [$($oSmsClient.ClientVersion)] after MCM client uninstall attempt. Waited $WmiTimeoutMin minutes."
+
+	# Additional validation after uninstall attempt
+	# Wait up to $WmiTimeoutMin (5 minutes) for the SMS_Client WMI class to be removed.
+	# This also helps wait for additional cleanup.
+	$smsClientRemoved = $false
+	$WmiTimeoutDate = (Get-Date).AddMinutes($WmiTimeoutMin)
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Waiting for SMS_Client WMI class to be removed..."
+	while ((Get-Date) -lt $WmiTimeoutDate) {
+		$oSmsClient = Get-SMSClient
+		if (-Not $oSmsClient) {
+			$smsClientRemoved = $true
+			break
+		}
+		Start-Sleep -Seconds 15
+	}
+	if ($smsClientRemoved) {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed SMS_Client WMI class was successfully removed by ccmsetup."
+	} else {
+		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] SMS_Client WMI class still exists with version [$($oSmsClient.ClientVersion)] after MCM client uninstall attempt. Waited $WmiTimeoutMin minutes."
+	}
+
+	$svcCcmExec = Get-Service CcmExec -ErrorAction SilentlyContinue
+	if (-not $svcCcmExec) {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed ccmexec service was successfully removed by ccmsetup."
+	} else {
+		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] CcmExec service still exists after MCM client uninstall attempt (current status: $($svcCcmExec.Status). This may prevent the reinstall script from triggering."
+	}
+
+	$mcmVersion = Get-MCMVersion
+	if ([string]::IsNullOrEmpty($mcmVersion)) {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM Client Version registry entry was successfully wiped by ccmsetup."
+	} else {
+		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client version is still set as [$mcmVersion] in registry after uninstall attempt. This may prevent the reinstall script from triggering."
+	}
 }
 
-$svcCcmExec = Get-Service CcmExec -ErrorAction SilentlyContinue
-if (-not $svcCcmExec) {
-	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed ccmexec service was successfully removed by ccmsetup."
-} else {
-    Write-Warning "CcmExec service still exists after MCM client uninstall attempt (current status: $($svcCcmExec.Status). This may prevent the reinstall script from triggering."
-}
-
-$mcmVersion = Get-MCMVersion
-if ([string]::IsNullOrEmpty($mcmVersion)) {
-	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM Client Version registry entry was successfully wiped by ccmsetup."
-} else {
-	Write-Warning "MCM client version is still set as [$mcmVersion] in registry after uninstall attempt. This may prevent the reinstall script from triggering."
-}
-
-if ($svcCcmExec -And [string]::IsNullOrEmpty($mcmVersion)) {
-	Write-Error "ccmexec service and MCM client version both still exist after uninstall. This will prevent the MCM client script from running on startup. Try running this script again. Exiting with return code -2."
+if ($svcCcmExec -And -Not [string]::IsNullOrEmpty($mcmVersion)) {
+	Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmexec service and MCM client version both still exist after uninstall attempt. This will prevent the MCM client script from running on startup. Try running this script again."
 	Stop-Transcript | Out-Null
 	exit -2
 }
-
+	
 if ($NoRestart) {
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] -NoRestart given. Exiting with return code 0."
 } else {
