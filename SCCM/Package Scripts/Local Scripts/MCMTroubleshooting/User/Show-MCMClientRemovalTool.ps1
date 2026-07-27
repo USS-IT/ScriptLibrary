@@ -20,19 +20,27 @@ Add-Type -AssemblyName System.Drawing
 # Configuration
 # ----------------------------
 
-$script:TranscriptLogPath = 'C:\USS\Logs\Remove-MCMClient.ps1.log'
-$script:CodeFilePath      = 'C:\TEMP\SCCMRemovalCode.txt'
-$script:ScheduledTaskName = 'JHU\SCCM Client Removal'
-$script:PollingTimeoutMinutes = 30
+# File path to temporarily store a code that the removal script will read.
+$CodeFilePath      = 'C:\TEMP\SCCMRemovalCode.txt'
+# Should match max timeout for removal script.
+$PollingTimeoutMinutes = 30
+
+$TranscriptLogPath = 'C:\USS\Logs\Remove-MCMClient.ps1.log'
+$ScheduledTaskName = 'JHU\SCCM Client Removal'
 
 $LogDir = "C:\USS\Logs\User\MCMTroubleshooting"
 
+# UI Config
+$MainFormTitle = 'SCCM Client Removal Script'
+$MainFormWidth = 700
+$MainFormHeight = 650
+
 # -- END Configuration --
 
-$script:WatchStarted          = $null
-$script:LastDisplayedText     = ''
-$script:StopTranscriptSeen    = $false
-$script:TaskStarted           = $false
+$WatchStarted          = $null
+$LastDisplayedText     = ''
+$StopTranscriptSeen    = $false
+$TaskStarted           = $false
 
 # Create the log path if it doesn't already exist
 if (-not (Test-Path $LogDir -PathType Container)) {
@@ -41,41 +49,98 @@ if (-not (Test-Path $LogDir -PathType Container)) {
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Start-MCMClientRemoval.ps1"
+	$_scriptName = "Show-MCMClientRemovalTool.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 Start-Transcript $LogPath -Force
 
-# Use WScript popup instead of MessageBox static calls
-$script:Popup = New-Object -ComObject WScript.Shell
-
-# Row number -> controls in that row
-$script:ControlRows = @{}
+# Cleanup any leftover code files from last run.
+if ((Test-Path $CodeFilePath)) {
+	Remove-Item $CodeFilePath -Force
+}
 
 # ----------------------------
 # Helper functions
 # ----------------------------
 
-function Register-NewControl {
-    param(
-		[Parameter(Mandatory=$true)]
-        [System.Windows.Forms.Control]$Control,
-		
-		[Parameter(Mandatory=$true)]
-        [int]$Row
-    )
-
-    if (-not $script:ControlRows.ContainsKey($Row)) {
-        $script:ControlRows[$Row] = New-Object System.Collections.ArrayList
-    }
-
-    [void]$script:ControlRows[$Row].Add($Control)
+function Initialize-FormControlRows {
+	# Initialize the dictionary of form controls.
+	param(
+		[Parameter(Mandatory=$true, Position=0)]
+		[System.Windows.Forms.Form] $Form
+	)
+	
+	# Initialize dictionary, stored by reference object.
+	if ($script:_FormControlRows -eq $null) {
+		$script:_FormControlRows = New-Object `
+			'System.Collections.Generic.Dictionary[
+				System.Windows.Forms.Form,
+				System.Collections.ArrayList
+			]'
+	}
+	if ($script:_FormControlRows[$Form] -eq $null) {
+		$script:_FormControlRows[$Form] = New-Object System.Collections.ArrayList
+		[void]$script:_FormControlRows[$Form].Add((New-Object System.Collections.ArrayList))
+	}
 }
 
+function Add-FormControl {
+	# Add a new control to the given form on the current or given row.
+    param(
+		[Parameter(Mandatory=$true, Position=0)]
+		[System.Windows.Forms.Form] $Form,
+		
+		[Parameter(Mandatory=$true, Position=1)]
+        [System.Windows.Forms.Control] $Control,
+		
+		[Parameter(Mandatory=$false, Position=2)]
+        [Nullable[int]] $Row
+    )
+
+	Initialize-FormControlRows $Form | Out-Null
+	
+	# If Row isn't given, assume the current row.
+	if ($Row -eq $null) {
+		$Row = $script:_FormControlRows[$Form].Count - 1
+	}
+	
+	if ($Row -ge $script:_FormControlRows[$Form].Count) {
+		throw "Invalid row number: $Row. Current row length is $($script:_FormControlRows[$Form].Count), starting at index 0."
+	}
+	
+	Write-Verbose "[Add-FormControl] Adding to row: $Row. New length for row: $($script:_FormControlRows[$Form][$Row].Count)"
+    
+	# Add the control to our group of form controls.
+	($script:_FormControlRows[$Form][$Row]).Add($Control) | Out-Null
+	# Add the control to this form.
+	[void]$Form.Controls.Add($Control)
+}
+
+function New-FormControlRow {
+	# Initializes a new row of form controls.
+	param(
+		[Parameter(Mandatory=$true, Position=0)]
+		[System.Windows.Forms.Form] $Form
+    )
+	
+	try {
+		if ($script:_FormControlRows -eq $null -Or $script:_FormControlRows[$Form] -eq $null) {
+			Initialize-FormControlRows $Form | Out-Null
+		} else {			
+			[void]$script:_FormControlRows[$Form].Add((New-Object System.Collections.ArrayList))
+		}
+	} catch {
+		throw $_
+	}
+}
+	
 function Get-ControlRelativeLocation {
     param(
-		[Parameter(Mandatory=$true)]
-        [int]$Row,
+		[Parameter(Mandatory=$true, Position=0)]
+		[System.Windows.Forms.Form] $Form,
+	
+		[Parameter(Mandatory=$false, Position=1)]
+        [Nullable[int]]$Row,
 				
         [int]$Spacing = 10,
 		
@@ -86,28 +151,45 @@ function Get-ControlRelativeLocation {
 
 	$X = $MarginLeft
 	$Y = $MarginTop
-    # First control on first row
-    if (-not $script:ControlRows.ContainsKey($Row) -Or $script:ControlRows[$Row].Count -eq 0) {		
-		if ($script:ControlRows.ContainsKey($Row - 1)) {
-			$PreviousRow = $script:ControlRows[$Row - 1]
-			if ($PreviousRow.Count -gt 0) {
-				$TallestBottom = (
-					$PreviousRow |
-					ForEach-Object { $_.Bottom } |
-					Measure-Object -Maximum
-				).Maximum
-
-				$Y = $TallestBottom + $Spacing
-			}
+	
+	try {
+		$formrows = $script:_FormControlRows[$Form]
+	} catch {
+		throw $_
+	}
+	
+	# If very first control on first row, just return margins.
+	if ($formrows -ne $null) {
+		# If Row isn't given, assume the current row.
+		if ($Row -eq $null) {
+			$Row = $formrows.Count - 1
+		} elseif ($Row -ge $formrows.Count) {
+			throw "Invalid row number: $Row. Current row length is $($script:_FormControlRows[$Form].Count), starting at index 0."
 		}
-    } else {
-		$LastControl =
-			$script:ControlRows[$Row][
-				$script:ControlRows[$Row].Count - 1
-			]
-			
-		$X = $LastControl.Right + $Spacing
-		$Y = $LastControl.Top
+	
+		# First control on given row
+		if ($formrows[$Row].Count -eq 0) {
+			if ($Row -gt 0) {
+				$PreviousRow = $formrows[$Row - 1]
+				if ($PreviousRow.Count -gt 0) {
+					$TallestBottom = (
+						$PreviousRow |
+						ForEach-Object { $_.Bottom } |
+						Measure-Object -Maximum
+					).Maximum
+
+					$Y = $TallestBottom + $Spacing
+				}
+			}
+		} else {
+			$LastControl =
+				$formrows[$Row][
+					$formrows[$Row].Count - 1
+				]
+				
+			$X = $LastControl.Right + $Spacing
+			$Y = $LastControl.Top
+		}
 	}
 
     return New-Object System.Drawing.Point($X, $Y)
@@ -115,29 +197,45 @@ function Get-ControlRelativeLocation {
 
 function Show-ErrorDialog {
     param(
+		[Parameter(Mandatory=$true)]
         [string]$Message,
+		
         [string]$Title = 'SCCM Client Removal'
     )
-
-    # 16 = Critical/Error icon
+	
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Show-ErrorDialog: $Message"
-    $null = $script:Popup.Popup($Message, 0, $Title, 16)
+	[System.Windows.Forms.MessageBox]::Show(
+		$Message,
+		$Title,
+		[System.Windows.Forms.MessageBoxButtons]::OK,
+		[System.Windows.Forms.MessageBoxIcon]::Error
+	)
 }
 
 function Show-WarningDialog {
     param(
+		[Parameter(Mandatory=$true)]
         [string]$Message,
+		
         [string]$Title = 'SCCM Client Removal'
     )
 
     # 48 = Warning icon
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Show-WarningDialog: $Message"
-    $null = $script:Popup.Popup($Message, 0, $Title, 48)
+	[System.Windows.Forms.MessageBox]::Show(
+		$Message,
+		$Title,
+		[System.Windows.Forms.MessageBoxButtons]::OK,
+		[System.Windows.Forms.MessageBoxIcon]::Warning
+	)
 }
 
-function Add-UiLine {
+function Add-TextBoxLine {
     param(
+		[Parameter(Mandatory=$true)]
         $TextBox,
+		
+		[Parameter(Mandatory=$true)]
         [string]$Message
     )
 
@@ -147,25 +245,22 @@ function Add-UiLine {
     $TextBox.ScrollToCaret()
 }
 
-function Test-NumericCode {
+function Test-IsNumericString {
     param(
-        [string]$Code
-    )
-
-    if ($null -eq $Code) {
-        return $false
-    }
-
-    $Code = $Code.Trim()
-
-    if ($Code -match '^\d+$') {
-        return $true
-    }
-
-    return $false
+		[Parameter(Mandatory=$true, Position=0)]
+        $Text
+	)
+	
+	if ($Text -eq $null -Or $Text -isnot [string]) {
+		return $false
+	}
+	
+	return (($Text.Trim()) -match '^\d+$')
 }
 
 function Get-McmClientVersion {
+	param()
+	
     $RegPaths = @(
         'HKLM:\SOFTWARE\Microsoft\SMS\Mobile Client',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\SMS\Mobile Client'
@@ -193,6 +288,8 @@ function Get-McmClientVersion {
 }
 
 function Get-CcmExecServiceStatus {
+	param()
+	
     try {
         $Service = Get-Service -Name CcmExec -ErrorAction Stop
 
@@ -208,6 +305,8 @@ function Get-CcmExecServiceStatus {
 }
 
 function Test-SmsClientExists {
+	param()
+	
     try {
         $Client = Get-CimInstance -Namespace root\ccm -ClassName SMS_Client -ErrorAction Stop
 
@@ -222,11 +321,36 @@ function Test-SmsClientExists {
     return $false
 }
 
+<#
+function Test-IsAdministrator {
+	# Return whether the current user is running under local admin context.
+	param()
+	
+	try {
+		$Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+
+		$Principal = New-Object System.Security.Principal.WindowsPrincipal($Identity) -ErrorAction Stop
+
+		return $Principal.IsInRole(
+			[System.Security.Principal.WindowsBuiltInRole]::Administrator
+		)
+	} catch {
+		Write-Error $_
+		return $false
+	}
+}
+#>
+
 function Update-ClientStatusLabels {
     param(
-        $VersionLabel,
-        $ServiceLabel,
-        $SmsClientLabel
+		[Parameter(Mandatory=$true)]
+        [System.Windows.Forms.Label] $VersionLabel,
+		
+		[Parameter(Mandatory=$true)]
+        [System.Windows.Forms.Label] $ServiceLabel,
+		
+		[Parameter(Mandatory=$true)]
+        [System.Windows.Forms.Label] $SmsClientLabel
     )
 
     $Version = Get-McmClientVersion
@@ -244,15 +368,94 @@ function Update-ClientStatusLabels {
     }
 }
 
+function Get-InputDialog {
+	# Shows an input dialog and returns the result.
+	
+	param(
+		[Parameter(Mandatory=$true)]
+		[string]$Title,
+		
+		[Parameter(Mandatory=$true)]
+		[string]$Prompt,
+		
+		[int]$MaxLength = 255,
+		
+		[string]$AcceptText = 'OK',
+		
+		[string]$CancelText = 'Cancel'
+	)
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $Title
+    $form.Size = New-Object System.Drawing.Size(350,150)
+    $form.StartPosition = 'CenterParent'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.ShowInTaskbar = $false
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(10,15)
+    $label.Size = New-Object System.Drawing.Size(120,20)
+    $label.Text = $Prompt
+    $label.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+    $textboxInput = New-Object System.Windows.Forms.TextBox
+    $textboxInput.Location = New-Object System.Drawing.Point(140,15)
+    $textboxInput.Size = New-Object System.Drawing.Size(150,20)
+    $textboxInput.MaxLength = $MaxLength
+
+    $buttonOK = New-Object System.Windows.Forms.Button
+    $buttonOK.Location = New-Object System.Drawing.Point(70,60)
+    $buttonOK.Size = New-Object System.Drawing.Size(80,25)
+    $buttonOK.Text = $AcceptText
+    $buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+
+    $buttonCancel = New-Object System.Windows.Forms.Button
+    $buttonCancel.Location = New-Object System.Drawing.Point(170,60)
+    $buttonCancel.Size = New-Object System.Drawing.Size(80,25)
+    $buttonCancel.Text = $CancelText
+    $buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+
+    $form.Controls.Add($label)
+    $form.Controls.Add($textboxInput)
+    $form.Controls.Add($buttonOK)
+    $form.Controls.Add($buttonCancel)
+
+    $form.AcceptButton = $buttonOK
+    $form.CancelButton = $buttonCancel
+
+    [void]$textboxInput.Focus()
+
+	[void]$textboxInput.Add_KeyDown({
+		if ($_.KeyCode -eq 'Enter') {
+			$buttonOK.PerformClick()
+		}
+	})
+
+    $Result = $form.ShowDialog()
+
+    if ($Result -ne [System.Windows.Forms.DialogResult]::OK) {
+        return $null
+    }
+
+    return $textboxInput.Text.Trim()
+}
+
 function Get-TranscriptInfo {
+	# Returns all of the transcript 
     param(
+		[Parameter(Mandatory=$true)]
         [string]$Path
     )
 
-    $Result = New-Object PSObject
-    $Result | Add-Member -MemberType NoteProperty -Name BodyText -Value ''
-    $Result | Add-Member -MemberType NoteProperty -Name StopMarkerSeen -Value $false
-
+    $Result = [PSCustomObject]@{
+		BodyText = ''
+		StopMarkerSeen = $false
+	}
+    
     if (-not (Test-Path $Path)) {
         return $Result
     }
@@ -264,24 +467,21 @@ function Get-TranscriptInfo {
         return $Result
     }
 
-    if ($null -eq $Lines) {
-        return $Result
-    }
-
-    if ($Lines.Count -eq 0) {
+    if ($Lines -eq $null -Or $Lines.Count -eq 0) {
         return $Result
     }
 
     # Find the last transcript start marker.
     # This avoids showing stale content if the log was appended instead of overwritten.
     $StartMarkerIndex = -1
-
+	
     for ($i = 0; $i -lt $Lines.Count; $i++) {
         if ($Lines[$i] -match 'PowerShell transcript start') {
             $StartMarkerIndex = $i
         }
     }
 
+	# If the start marker was not found, return the entire log.
     if ($StartMarkerIndex -lt 0) {
         $Result.BodyText = ($Lines -join "`r`n")
         return $Result
@@ -368,7 +568,8 @@ function Get-TranscriptInfo {
 
 function Update-TranscriptDisplay {
     param(
-        $TextBox
+		[Parameter(Mandatory=$true)]
+        [System.Windows.Forms.TextBox] $TextBox
     )
 
     $Info = Get-TranscriptInfo -Path $script:TranscriptLogPath
@@ -387,24 +588,25 @@ function Update-TranscriptDisplay {
 
 function Start-RemovalTask {
     param(
-        [string]$Code,
-        $TextBox
+		[Parameter(Mandatory=$true)]
+        [string] $Code,
+		
+		[Parameter(Mandatory=$true)]
+        [System.Windows.Forms.TextBox] $TextBox
     )
 
     try {
-        $ParentFolder = Split-Path -Path $script:CodeFilePath -Parent
-
+        # Write the code to a file.
+        # The elevated removal script should read this file and delete it.
+		$ParentFolder = Split-Path -Path $script:CodeFilePath -Parent
         if (-not (Test-Path $ParentFolder)) {
             New-Item -Path $ParentFolder -ItemType Directory -Force | Out-Null
         }
+		
+        Set-Content -Path $script:CodeFilePath -Value $Code -Force -Encoding ASCII -ErrorAction Stop
 
-        # Write the code to a file instead of putting it on the command line.
-        # The elevated removal script should read this file and delete it.
-        Set-Content -Path $script:CodeFilePath -Value $Code -Force -Encoding ASCII
-
-        Add-UiLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Wrote removal request."
-        Add-UiLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Starting SCCM removal task..."
-        Add-UiLine -TextBox $TextBox -Message ""
+        Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Starting SCCM removal task..."
+        Add-TextBoxLine -TextBox $TextBox -Message " "
 
 		<#
         $Arguments = '/Run /TN "' + $script:ScheduledTaskName + '"'
@@ -412,7 +614,7 @@ function Start-RemovalTask {
         $Process = Start-Process -FilePath 'schtasks.exe' -ArgumentList $Arguments -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
 
         if ($Process.ExitCode -ne 0) {
-            Add-UiLine -TextBox $TextBox -Message "ERROR: schtasks.exe returned exit code $($Process.ExitCode)."
+            Add-TextBoxLine -TextBox $TextBox -Message "ERROR: schtasks.exe returned exit code $($Process.ExitCode)."
             return $false
         }
 		#>
@@ -421,31 +623,43 @@ function Start-RemovalTask {
         $script:StopTranscriptSeen = $false
         $script:TaskStarted = $true
 
-        Add-UiLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** SCCM client removal task was started."
+        Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** SCCM client removal task was started."
         Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Watching log: $script:TranscriptLogPath"
-        Add-UiLine -TextBox $TextBox -Message ""
+        Add-TextBoxLine -TextBox $TextBox -Message " "
 
         return $true
     }
     catch {
-        Add-UiLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Failed to start SCCM removal task."
-        Add-UiLine -TextBox $TextBox -Message $_.Exception.Message
+        Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Failed to start SCCM removal task."
+		Write-Error $_
         return $false
     }
 }
 
+function Start-CleanupBeforeExit {
+	param()
+	
+	if ((Test-Path $script:CodeFilePath)) {
+		Remove-Item $script:CodeFilePath -Force
+	}
+	
+	try {
+		Stop-Transcript | Out-Null
+	} catch {}
+}
+	
 # ----------------------------
-# Build UI
+# Main Form UI
 # ----------------------------
 
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'SCCM Client Removal Script'
-$form.Size = New-Object System.Drawing.Size(700, 650)
-$form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false
-$form.MinimizeBox = $true
-$form.KeyPreview = $true
+$formMain = New-Object System.Windows.Forms.Form
+$formMain.Text = $MainFormTitle
+$formMain.Size = New-Object System.Drawing.Size($MainFormWidth, $MainFormHeight)
+$formMain.StartPosition = 'CenterScreen'
+$formMain.FormBorderStyle = 'FixedDialog'
+$formMain.MaximizeBox = $false
+$formMain.MinimizeBox = $true
+$formMain.KeyPreview = $true
 
 $marginLeft = 10
 $marginTop = 10
@@ -455,104 +669,82 @@ $textBoxHeight = 24
 $buttonHeight = 30
 
 # Row 0
-$row = 0
 # Client Version
 $labelVersion = New-Object System.Windows.Forms.Label
-$labelVersion.Location = Get-ControlRelativeLocation -Row $row -Spacing 5
+$labelVersion.Location = Get-ControlRelativeLocation -Form $formMain -Spacing 5
 $labelVersion.Size = New-Object System.Drawing.Size(350, $labelHeight)
 $labelVersion.Text = 'MCM Client Version: Checking...'
 $labelVersion.Font = New-Object System.Drawing.Font(
 	$labelVersion.Font,
 	[System.Drawing.FontStyle]::Bold
 )
-$form.Controls.Add($labelVersion)
-Register-NewControl -Control $labelVersion -Row $row
+Add-FormControl $formMain $labelVersion
 
 # Row 2
-$row++
+New-FormControlRow $formMain
 # Service Status
 $labelService = New-Object System.Windows.Forms.Label
-$labelService.Location = Get-ControlRelativeLocation -Row $row -Spacing 5
+$labelService.Location = Get-ControlRelativeLocation -Form $formMain -Spacing 5
 $labelService.Size = New-Object System.Drawing.Size(200, $labelHeight)
 $labelService.Text = 'CcmExec Status: Checking...'
 $labelService.Font = New-Object System.Drawing.Font(
 	$labelService.Font,
 	[System.Drawing.FontStyle]::Bold
 )
-$form.Controls.Add($labelService)
-Register-NewControl -Control $labelService -Row $row
+Add-FormControl $formMain $labelService
 
 # Row 3
-$row++
+New-FormControlRow $formMain
 # SMS Client WMI Status
 $labelSmsClient = New-Object System.Windows.Forms.Label
-$labelSmsClient.Location = Get-ControlRelativeLocation -Row $row -Spacing 5
+$labelSmsClient.Location = Get-ControlRelativeLocation -Form $formMain -Spacing 5
 $labelSmsClient.Size = New-Object System.Drawing.Size(200, $labelHeight)
 $labelSmsClient.Text = 'SMS_Client WMI: Checking...'
 $labelSmsClient.Font = New-Object System.Drawing.Font(
 	$labelSmsClient.Font,
 	[System.Drawing.FontStyle]::Bold
 )
-$form.Controls.Add($labelSmsClient)
-Register-NewControl -Control $labelSmsClient -Row $row
+Add-FormControl $formMain $labelSmsClient
 
 # Row 4
-$row++
+New-FormControlRow $formMain
 # Start and Input controls
 $buttonStart = New-Object System.Windows.Forms.Button
-$buttonStart.Location = Get-ControlRelativeLocation -Row $row
+$buttonStart.Location = Get-ControlRelativeLocation -Form $formMain
 $buttonStart.Size = New-Object System.Drawing.Size(120, $buttonHeight)
 $buttonStart.Text = 'Start Removal'
-$form.Controls.Add($buttonStart)
-Register-NewControl -Control $buttonStart -Row $row
-
-$labelCode = New-Object System.Windows.Forms.Label
-$labelCode.Location = Get-ControlRelativeLocation -Row $row
-$labelCode.Size = New-Object System.Drawing.Size(120, $labelHeight)
-$labelCode.Text = 'Removal code:'
-$labelCode.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-$form.Controls.Add($labelCode)
-Register-NewControl -Control $labelCode -Row $row
-
-$textBoxCode = New-Object System.Windows.Forms.TextBox
-$textBoxCode.Location = Get-ControlRelativeLocation -Row $row
-$textBoxCode.Size = New-Object System.Drawing.Size(160, $textBoxHeight)
-$textBoxCode.MaxLength = 12
-$form.Controls.Add($textBoxCode)
-Register-NewControl -Control $textBoxCode -Row $row
+Add-FormControl $formMain $buttonStart
 
 # Row 5
-$row++
+New-FormControlRow $formMain
 # Script status label
 $labelStatus = New-Object System.Windows.Forms.Label
-$labelStatus.Location = Get-ControlRelativeLocation -Row $row
+$labelStatus.Location = Get-ControlRelativeLocation -Form $formMain
 $labelStatus.Size = New-Object System.Drawing.Size(850, $labelHeight)
 $labelStatus.Text = 'Enter the removal code, then click Start Removal.'
 $labelStatus.Font = New-Object System.Drawing.Font(
 	$labelStatus.Font,
 	[System.Drawing.FontStyle]::Bold
 )
-$form.Controls.Add($labelStatus)
-Register-NewControl -Control $labelStatus -Row $row
+Add-FormControl $formMain $labelStatus
 
 # Row 4
-$row++
+New-FormControlRow $formMain
 # Log textbox
 $textBoxLog = New-Object System.Windows.Forms.TextBox
-$textBoxLog.Location = Get-ControlRelativeLocation -Row $row
+$textBoxLog.Location = Get-ControlRelativeLocation -Form $formMain
 $textBoxLog.Size = New-Object System.Drawing.Size(
-	($form.ClientSize.Width - $textBoxLog.Location.X - 10), 
-	($form.ClientSize.Height - $textBoxLog.Location.Y - 10)
+	($formMain.ClientSize.Width - $textBoxLog.Location.X - 10), 
+	($formMain.ClientSize.Height - $textBoxLog.Location.Y - 10)
 )
 $textBoxLog.Multiline = $true
 $textBoxLog.ScrollBars = 'Both'
 $textBoxLog.ReadOnly = $true
 $textBoxLog.Font = New-Object System.Drawing.Font('Consolas', 9)
 $textBoxLog.WordWrap = $false
-$form.Controls.Add($textBoxLog)
-Register-NewControl -Control $textBoxLog -Row $row
+Add-FormControl $formMain $textBoxLog
 
-# Timer
+# Timer for polling
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 1000
 
@@ -560,7 +752,7 @@ $timer.Interval = 1000
 Update-ClientStatusLabels -VersionLabel $labelVersion -ServiceLabel $labelService -SmsClientLabel $labelSmsClient
 
 # ----------------------------
-# Events
+# Form Events
 # ----------------------------
 
 $timer.Add_Tick({
@@ -578,10 +770,9 @@ $timer.Add_Tick({
         Update-ClientStatusLabels -VersionLabel $labelVersion -ServiceLabel $labelService -SmsClientLabel $labelSmsClient
 
         $buttonStart.Enabled = $true
-        $textBoxCode.Enabled = $true
 
-        Add-UiLine -TextBox $textBoxLog -Message ''
-        Add-UiLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Removal script transcript ended. Refreshing Client labels."
+        Add-TextBoxLine -TextBox $textBoxLog -Message ''
+        Add-TextBoxLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Removal script transcript ended. Refreshing Client labels."
 
         $script:TaskStarted = $false
         return
@@ -596,14 +787,13 @@ $timer.Add_Tick({
             $labelStatus.Text = 'Timed out waiting for removal transcript to finish.'
 
             $buttonStart.Enabled = $true
-            $textBoxCode.Enabled = $true
 
-            Add-UiLine -TextBox $textBoxLog -Message ''
-            Add-UiLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Timed out waiting for log end marker."
+            Add-TextBoxLine -TextBox $textBoxLog -Message ''
+            Add-TextBoxLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Timed out waiting for log end marker."
 
             Update-ClientStatusLabels -VersionLabel $labelVersion -ServiceLabel $labelService -SmsClientLabel $labelSmsClient
 
-            Show-ErrorDialog -Message 'Timed out after 30 minutes waiting for the SCCM removal log to complete. The removal process may still be running, stalled, or may have failed before closing the transcript.'
+            Show-ErrorDialog -Title $MainFormTitle -Message 'Timed out after waiting 30 minutes for the SCCM removal log to complete. The removal process may still be running, stalled, or may have failed before closing the transcript.'
 
             $script:TaskStarted = $false
             return
@@ -617,18 +807,18 @@ $timer.Add_Tick({
 })
 
 $buttonStart.Add_Click({
-    $Code = $textBoxCode.Text.Trim()
-
-    if (-not (Test-NumericCode -Code $Code)) {
-        Add-UiLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Please enter a numeric removal code."
+	$Code = Get-InputDialog -Title 'Removal Code Required' -Prompt 'Enter numeric code:'
+	
+	Write-Host "Code: $Code"
+	
+    if (-not (Test-IsNumericString $Code)) {
+        Add-TextBoxLine -TextBox $textBoxLog -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Please enter a numeric removal code."
         $labelStatus.Text = 'Invalid code. Numeric values only.'
-        Show-WarningDialog -Message 'Please enter a numeric removal code.'
-        $textBoxCode.Focus()
+        Show-WarningDialog -Title $MainFormTitle -Message 'Please enter a numeric removal code.' 
         return
     }
 
     $buttonStart.Enabled = $false
-    $textBoxCode.Enabled = $false
 
     $script:LastDisplayedText = ''
     $script:StopTranscriptSeen = $false
@@ -640,31 +830,18 @@ $buttonStart.Add_Click({
     if ($StartedOk) {
         $timer.Start()
         $labelStatus.Text = 'Removal started. Watching transcript log.'
-    }
-    else {
+    } else {
         $buttonStart.Enabled = $true
-        $textBoxCode.Enabled = $true
         $labelStatus.Text = 'Failed to start removal task.'
-        Show-ErrorDialog -Message 'Failed to start the SCCM removal task. Check the task name, permissions, and local script files.'
+        Show-ErrorDialog -Title $MainFormTitle -Message 'Failed to start the SCCM removal task.'
     }
 })
 
-$textBoxCode.Add_KeyDown({
-    if ($_.KeyCode -eq 'Enter') {
-        $buttonStart.PerformClick()
-    }
-})
-
-$form.Add_FormClosing({
+$formMain.Add_FormClosing({
     $timer.Stop()
     $timer.Dispose()
-	try {
-		Stop-Transcript | Out-Null
-	} catch {}
 })
 
-$form.ShowDialog() | Out-Null
+$formMain.ShowDialog() | Out-Null
 
-try {
-	Stop-Transcript | Out-Null
-} catch {}
+Start-CleanupBeforeExit | Out-Null
