@@ -608,16 +608,7 @@ function Start-RemovalTask {
         Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** Starting SCCM removal task..."
         Add-TextBoxLine -TextBox $TextBox -Message " "
 
-		<#
-        $Arguments = '/Run /TN "' + $script:ScheduledTaskName + '"'
-
-        $Process = Start-Process -FilePath 'schtasks.exe' -ArgumentList $Arguments -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
-
-        if ($Process.ExitCode -ne 0) {
-            Add-TextBoxLine -TextBox $TextBox -Message "ERROR: schtasks.exe returned exit code $($Process.ExitCode)."
-            return $false
-        }
-		#>
+		Write-EventLog -LogName 'USS-EventLog' -Source 'Remove-MCMClient' -EventID 1000 -EntryType Information -Message 'Trigger Remove-MCMClient with code' -ErrorAction Stop
 
         $script:WatchStarted = Get-Date
         $script:StopTranscriptSeen = $false
@@ -630,7 +621,7 @@ function Start-RemovalTask {
         return $true
     }
     catch {
-        Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Failed to start SCCM removal task."
+        Add-TextBoxLine -TextBox $TextBox -Message "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ** ERROR: Failed to start SCCM client removal task."
 		Write-Error $_
         return $false
     }

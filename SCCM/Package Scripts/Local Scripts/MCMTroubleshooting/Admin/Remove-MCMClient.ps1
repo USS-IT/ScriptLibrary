@@ -10,7 +10,7 @@
 .PARAMETER NoRestart
 	Exit instead of restarting.
 .PARAMETER CodeFile
-	Check the given code file path against the weekly code (from Get-WeeklyRemovalCode.ps1).
+	Check the given code file path against the weekly code (from Get-WeeklyRemovalCode.ps1). The process will only start if the file has a valid code.
 .PARAMETER LogDir
 	Directory for logging. Default is C:\USS\Logs.
 .OUTPUTS
@@ -18,11 +18,14 @@
 	>0 - Failure codes from ccmsetup.exe
 	-1 - Failed to remove ccmexec service after confirming ccmsetup.exe does not exist
 	-2 - Ccmexec service and MCM client version still exist after uninstall finished
+	-3 - Invalid code file.
 .NOTES
 	Author: Matt Carras (mcarras8)
 	Created: 07-23-2026
 	
 	Logs to C:\USS\Logs\Remove-MCMClient.ps1.log by default.
+	
+	If a CodeFile is given, the process will only start if the code file exists and is valid.
 	
 	Requires Administrator privileges.
 #>
@@ -39,11 +42,17 @@ param(
 # Configuration
 # ----------------------------
 
+# Amount of time to watch the ccmsetup logs for a valid return code.
 $SetupTimeoutMin = 30
+# Amount of time before computer automatically restarts after determining the client was successfully uninstalled.
 $RestartSec = 300
+# Amount of time to additionally wait for the SMS_Client WMI class to be removed.
 $WmiTimeoutMin = 5
+# Path to Windows's ccmsetup.log and ccmsetup.exe files.
 $CCMLogPath = "$env:windir\ccmsetup\Logs\ccmsetup.log"
+$CCMExePath = "$env:windir\ccmsetup\ccmsetup.exe"
 
+$WatcherTask
 # -- END CONFIGURATION --
 
 # Create the log path if it doesn't already exist
@@ -64,10 +73,9 @@ Start-Transcript $LogPath -Force
 
 function Get-WeeklyCode {
 	# Return a 4 digit code that rotates every Sunday.
+	param()
 	
-    param(
-        [string]$Secret = 'JHU-MCM-Removal-Salt'
-    )
+	$Secret = 'USS-MCM-Removal-Salt'
 
     $Today = (Get-Date).ToUniversalTime()
 
@@ -77,8 +85,11 @@ function Get-WeeklyCode {
     # Example: 20260719
     $WeekKey = $WeekStart.ToString('yyyyMMdd')
 
+	# Get computer name, all uppercase
+	$compname = ($env:COMPUTERNAME).Trim().ToUpper()
+	
     # Combine with secret
-    $InputString = "$WeekKey|$Secret"
+    $InputString = "$WeekKey|$Secret|$compname"
 
     # SHA256 hash
     $Sha = [System.Security.Cryptography.SHA256]::Create()
@@ -99,6 +110,7 @@ function Get-CCMSetupReturnCode {
     param(
 		[Parameter(Mandatory, Position=0)]
         [string]$LogPath,
+		
 		[Parameter(Mandatory, Position=1)]
 		[Alias('Start')]
         [datetime]$StartDateTime
@@ -175,6 +187,26 @@ function Get-SMSClient {
     return $null
 }
 
+# -- END FUNCTIONS --
+
+# Check if we require a code file to continue.
+if (-Not [string]::IsNullOrEmpty($CodeFile)) {
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Code file given. Checking code."
+	$validCode = $false
+	if ((Test-Path $CodeFile)) {
+		$code = Get-Content $CodeFile -Encoding ASCII
+		$validCode = (-Not [string]::IsNullOrEmpty($code) -And $code -eq (Get-WeeklyCode))		
+	}
+	if ($validCode) {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Code is valid. Continuing."
+	} else {
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: Invalid code. Aborting."
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -3"
+		Stop-Transcript | Out-Null
+		exit -3
+	}
+}
+	
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Polling initial state"
 $mcmVersion = Get-MCMVersion
 $oSmsClient = Get-SMSClient
@@ -189,10 +221,10 @@ $TimeoutDate = (Get-Date).AddMinutes($SetupTimeoutMin)
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Calling ccmsetup.exe /uninstall"
 $ccmSetupError = $false
 $ccmSetupMissing = $false
-if ((Test-Path "$env:windir\ccmsetup\ccmsetup.exe")) {
+if ((Test-Path $CCMExePath)) {
 	try {
 		$process = Start-Process `
-			-FilePath "$env:windir\ccmsetup\ccmsetup.exe" `
+			-FilePath $CCMExePath `
 			-ArgumentList "/uninstall" `
 			-WindowStyle Hidden `
 			-ErrorAction Stop
@@ -206,11 +238,11 @@ if ((Test-Path "$env:windir\ccmsetup\ccmsetup.exe")) {
 		}
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe /uninstall exited with $ccmExitCode. Uninstall should be continuing in the background."
 	} catch {
-		Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmsetup.exe failed to start: $_"
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ERROR: ccmsetup.exe failed to start: $_"
 		$ccmSetupError = $true
 	}
 } else {
-	Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] [$env:windir\ccmsetup\ccmsetup.exe] not found."
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: [$CCMExePath] not found."
 	$ccmSetupError = $true
 	$ccmSetupMissing = $true
 }
@@ -233,7 +265,7 @@ if ($ccmSetupMissing) {
 				Start-Sleep -Seconds 5
 			}
 			if ((Get-Date) -ge $TimeoutDate) {
-				Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Timeout reached waiting for ccmexec service status change (waited 3 minutes). Current status: $($svcCcmExec.Status)"
+				Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: Timeout reached waiting for ccmexec service status change (waited 3 minutes). Current status: $($svcCcmExec.Status)"
 			}
 			sc.exe delete CcmExec
 			Start-Sleep -Seconds 10
@@ -243,10 +275,10 @@ if ($ccmSetupMissing) {
 				Start-Sleep -Seconds 5
 			}
 			if ((Get-Date) -ge $TimeoutDate) {
-				Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Timeout reached waiting for ccmexec service to be removed (waited 3 minutes). Current status: $($svcCcmExec.Status)"
+				Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: Timeout reached waiting for ccmexec service to be removed (waited 3 minutes). Current status: $($svcCcmExec.Status)"
 			}
 		} catch {
-			Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Failed to remove ccmexec service: $_"
+			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: Failed to remove ccmexec service: $_"
 			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -1"
 			Stop-Transcript | Out-Null
 			exit -1
@@ -269,13 +301,12 @@ if ($ccmSetupMissing) {
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Ccmsetup exited with return code 0. MCM client uninstall completed successfully."
 						break
 					} elseif ($returnCode -eq 8) {
-						$msg = 
-						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
+						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
 						Stop-Transcript | Out-Null
 						exit $returnCode
 					} else {
-						Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info. Exiting with return code $returnCode."
+						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info. Exiting with return code $returnCode."
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
 						Stop-Transcript | Out-Null
 						exit $returnCode
@@ -287,7 +318,7 @@ if ($ccmSetupMissing) {
 		}
 
 		if ((Get-Date) -ge $TimeoutDate) {
-			Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client uninstall wait reached $SetupTimeoutMin minute timeout."
+			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: MCM client uninstall wait reached $SetupTimeoutMin minute timeout."
 		}
 	}
 
@@ -310,26 +341,26 @@ if ($ccmSetupMissing) {
 	if ($smsClientRemoved) {
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed SMS_Client WMI class was successfully removed by ccmsetup."
 	} else {
-		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] SMS_Client WMI class still exists with version [$($oSmsClient.ClientVersion)] after MCM client uninstall attempt. Waited $WmiTimeoutMin minutes."
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: SMS_Client WMI class still exists with version [$($oSmsClient.ClientVersion)] after MCM client uninstall attempt. Waited $WmiTimeoutMin minutes."
 	}
 
 	$svcCcmExec = Get-Service CcmExec -ErrorAction SilentlyContinue
 	if (-not $svcCcmExec) {
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Confirmed ccmexec service was successfully removed by ccmsetup."
 	} else {
-		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] CcmExec service still exists after MCM client uninstall attempt (current status: $($svcCcmExec.Status). This may prevent the reinstall script from triggering."
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: CcmExec service still exists after MCM client uninstall attempt (current status: $($svcCcmExec.Status). This may prevent the reinstall script from triggering."
 	}
 
 	$mcmVersion = Get-MCMVersion
 	if ([string]::IsNullOrEmpty($mcmVersion)) {
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM Client Version registry entry was successfully wiped by ccmsetup."
 	} else {
-		Write-Warning "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] MCM client version is still set as [$mcmVersion] in registry after uninstall attempt. This may prevent the reinstall script from triggering."
+		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] WARNING: MCM client version is still set as [$mcmVersion] in registry after uninstall attempt. This may prevent the reinstall script from triggering."
 	}
 }
 
 if ($svcCcmExec -And -Not [string]::IsNullOrEmpty($mcmVersion)) {
-	Write-Error "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] ccmexec service and MCM client version both still exist after uninstall attempt. This will prevent the MCM client script from running on startup. Try running this script again."
+	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: ccmexec service and MCM client version both still exist after uninstall attempt. This will prevent the MCM client script from running on startup. Try running this script again."
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -2"
 	Stop-Transcript | Out-Null
 	exit -2
@@ -341,7 +372,7 @@ if ($NoRestart) {
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Restarting in $($RestartSec / 60) minutes."
 	shutdown.exe /r /t $RestartSec /c "SCCM client removal completed. Please restart the system. If the system is not restarted sooner, it will automatically restart in $($RestartSec / 60) minutes."
 }
-
+				
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code 0"
 Stop-Transcript | Out-Null
 exit 0
