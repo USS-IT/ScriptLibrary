@@ -13,7 +13,7 @@ SET "_LOGDIR=%_MAINDIR%\Logs"
 SET "_USERLOGSDIR=%_LOGDIR%\User"
 SET "_ADMINLOGSDIR=%_LOGDIR%\Admin"
 SET "_STARTMENUFOLDER=%ProgramData%\Microsoft\Windows\Start Menu\Programs\USS"
-SET "_PACKAGEFOLDER=Reenable_WiFi"
+SET "_PACKAGEFOLDER=NetworkUtilities"
 SET "_LOGFILE=%_LOGDIR%\Packages\%_PACKAGEFOLDER%\Install_Package.log"
 REM Set permissions on main folder to read-only for users.
 IF NOT EXIST "%_MAINDIR%" (
