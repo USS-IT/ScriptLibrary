@@ -25,10 +25,14 @@ $CodeFilePath      = 'C:\TEMP\SCCMRemovalCode.txt'
 # Should match max timeout for removal script.
 $PollingTimeoutMinutes = 30
 
-$TranscriptLogPath = 'C:\USS\Logs\Remove-MCMClient.ps1.log'
 $ScheduledTaskName = 'JHU\SCCM Client Removal'
 
 $LogDir = "C:\USS\Logs\User\MCMTroubleshooting"
+
+$TranscriptLogPath = 'C:\USS\Logs\Remove-MCMClient.ps1.log'
+$TranscriptStartMarker = '\*\* LOG START \*\*'
+$TranscriptEndMarker = '\*\* LOG END \*\*'
+$TranscriptRestartPending = 'Restarting in'
 
 # UI Config
 $MainFormTitle = 'SCCM Client Removal Script'
@@ -38,8 +42,7 @@ $MainFormHeight = 650
 # -- END Configuration --
 
 $WatchStarted          = $null
-$LastDisplayedText     = ''
-$StopTranscriptSeen    = $false
+$LastTranscriptResult  = $null
 $TaskStarted           = $false
 
 # Create the log path if it doesn't already exist
@@ -445,124 +448,87 @@ function Get-InputDialog {
 }
 
 function Get-TranscriptInfo {
-	# Returns all of the transcript 
     param(
 		[Parameter(Mandatory=$true)]
-        [string]$Path
+        [string]$Path,
+		
+		[PSCustomObject] $LastResult
     )
 
-    $Result = [PSCustomObject]@{
-		BodyText = ''
-		StopMarkerSeen = $false
+	if ($LastResult) {
+		$Result = [PSCustomObject]@{
+			BodyText = ''
+			StartMarkerSeen = $LastResult.StartMarkerSeen
+			StopMarkerSeen = $LastResult.StopMarkerSeen
+			RestartPending = $LastResult.RestartPending
+			LastLength = $LastResult.LastLength
+		}
+	} else {
+		$Result = [PSCustomObject]@{
+			BodyText = ''
+			StartMarkerSeen = $false
+			StopMarkerSeen = $false
+			RestartPending = $false
+			LastLength = 0
+		}
 	}
     
+	if ($LastResult.StopMarkerSeen) {
+		return $Result
+	}
+	
     if (-not (Test-Path $Path)) {
-        return $Result
+        return $null
     }
 
     try {
         $Lines = Get-Content -Path $Path -ErrorAction Stop
     }
     catch {
-        return $Result
+        return $null
     }
 
-    if ($Lines -eq $null -Or $Lines.Count -eq 0) {
-        return $Result
-    }
-
-    # Find the last transcript start marker.
-    # This avoids showing stale content if the log was appended instead of overwritten.
-    $StartMarkerIndex = -1
+	# If the file length has shrunk, return null.
+	if ($LastResult.LastLength -gt $Lines.Count) {
+		return $null
+	}
 	
-    for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match 'PowerShell transcript start') {
-            $StartMarkerIndex = $i
-        }
+    if ($Lines -eq $null -Or $Lines.Count -eq 0) {
+        return $null
     }
 
-	# If the start marker was not found, return the entire log.
-    if ($StartMarkerIndex -lt 0) {
-        $Result.BodyText = ($Lines -join "`r`n")
-        return $Result
-    }
-
-    # Find the end of the transcript header.
-    # Header usually ends at the next line made of asterisks.
-    $BodyStartIndex = $StartMarkerIndex + 1
-
-    for ($i = $StartMarkerIndex + 1; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match '^\*{10,}\s*$') {
-            $BodyStartIndex = $i + 1
-            break
-        }
-    }
-
-    # Optional cleanup:
-    # Remove the informational line emitted by Start-Transcript if it appears
-    # immediately after the header.
-    while ($BodyStartIndex -lt $Lines.Count) {
-        if ($Lines[$BodyStartIndex] -match '^\s*Transcript started, output file is') {
-            $BodyStartIndex++
-            continue
-        }
-
-        if ($Lines[$BodyStartIndex].Trim().Length -eq 0) {
-            $BodyStartIndex++
-            continue
-        }
-
-        break
-    }
-
-    # Find Stop-Transcript footer marker.
-    $EndMarkerIndex = -1
-
-    for ($i = $BodyStartIndex; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match 'PowerShell transcript end') {
-            $EndMarkerIndex = $i
-            break
-        }
-    }
-
-    $BodyEndIndex = $Lines.Count - 1
-
-    if ($EndMarkerIndex -ge 0) {
-        $Result.StopMarkerSeen = $true
-
-        # Footer usually begins at the asterisk line immediately before
-        # "PowerShell transcript end".
-        $FooterStartIndex = $EndMarkerIndex
-
-        for ($i = $EndMarkerIndex - 1; $i -ge $BodyStartIndex; $i--) {
-            if ($Lines[$i] -match '^\*{10,}\s*$') {
-                $FooterStartIndex = $i
-                break
-            }
-        }
-
-        $BodyEndIndex = $FooterStartIndex - 1
-    }
-
-    if ($BodyEndIndex -lt $BodyStartIndex) {
-        $Result.BodyText = ''
-        return $Result
-    }
-
-    $BodyLines = @()
-
-    for ($i = $BodyStartIndex; $i -le $BodyEndIndex; $i++) {
-        $Line = $Lines[$i]
-
-        # Do not show Stop-Transcript command output/footer if it slips in.
-        if ($Line -match '^\s*Transcript stopped, output file is') {
-            continue
-        }
-
-        $BodyLines += $Line
-    }
-
-    $Result.BodyText = ($BodyLines -join "`r`n")
+	$EndMarkerIndex = $null
+	$StartMarkerIndex = $null
+	for ($i = ($Lines.Count-1); $i -gt $Result.LastLength; $i--) {
+		# Check for the end marker.
+		if (-Not $Result.StartMarkerSeen -And $Lines[$i] -match $script:TranscriptStartMarker) {
+			$Result.StartMarkerSeen = $true
+			$StartMarkerIndex = $i
+			break
+		} elseif (-Not $Result.RestartPending -And $Lines[$i] -match $script:TranscriptRestartPending) {
+			$Result.RestartPending = $true
+		}
+		} elseif (-Not $Result.StopMarkerSeen -And $Lines[$i] -match $script:TranscriptEndMarker) {
+			$Result.StopMarkerSeen = $true
+			$EndMarkerIndex = $i
+		}
+	}
+	if ($i -gt $Result.LastLength) {
+		if ($StartMarkerIndex -ne $null -And $StartMarkerIndex -lt $Lines.Count) {
+			$StartIndex = $StartMarkerIndex + 1
+		} else {
+			$StartIndex = $Result.LastLength
+		}
+		if ($EndMarkerIndex -ne $null -And $EndMarkerIndex -gt 0) {
+			$EndIndex = $EndMarkerIndex - 1
+		} else {
+			$EndIndex = $i
+		}
+		
+		$Result.BodyText = ($Lines[$StartIndex..$EndIndex] -join "`r`n")
+		$Result.LastLength = $Lines.Count
+	}
+		
     return $Result
 }
 
@@ -572,18 +538,21 @@ function Update-TranscriptDisplay {
         [System.Windows.Forms.TextBox] $TextBox
     )
 
-    $Info = Get-TranscriptInfo -Path $script:TranscriptLogPath
+	if ($LastTranscriptResult) {
+		$Info = Get-TranscriptInfo -Path $script:TranscriptLogPath -LastResult $LastTranscriptResult
+	} else {
+		$Info = Get-TranscriptInfo -Path $script:TranscriptLogPath
+	}
 
-    if ($Info.BodyText -ne $script:LastDisplayedText) {
-        $TextBox.Text = $Info.BodyText
-        $TextBox.SelectionStart = $TextBox.Text.Length
-        $TextBox.ScrollToCaret()
-        $script:LastDisplayedText = $Info.BodyText
-    }
-
-    if ($Info.StopMarkerSeen) {
-        $script:StopTranscriptSeen = $true
-    }
+	if(-Not [string]::IsNullOrEmpty($Info.BodyText)) {
+		$TextBox.AppendText($Info.BodyText)
+		$TextBox.SelectionStart = $TextBox.Text.Length
+		$TextBox.ScrollToCaret()
+	}
+	
+	if ($Info -ne $null) {
+		$script:LastTranscriptResult = $Info
+	}
 }
 
 function Start-RemovalTask {
@@ -753,13 +722,17 @@ $timer.Add_Tick({
 
     Update-TranscriptDisplay -TextBox $textBoxLog
 
-    if ($script:StopTranscriptSeen) {
+    if ($script:LastTranscriptResult -eq $null -Or $script:LastTranscriptResult.StopTranscriptSeen) {
         $timer.Stop()
 
         $labelStatus.Text = 'Removal script completed. Refreshing client status.'
 
         Update-ClientStatusLabels -VersionLabel $labelVersion -ServiceLabel $labelService -SmsClientLabel $labelSmsClient
 
+		if ($script:LastTranscriptResult.RestartPending) {
+			# Add restart watcher task
+		}
+		
         $buttonStart.Enabled = $true
 
         Add-TextBoxLine -TextBox $textBoxLog -Message ''
