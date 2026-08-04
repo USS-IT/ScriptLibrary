@@ -43,6 +43,7 @@ $MainFormHeight = 650
 
 $WatchStarted          = $null
 $LastTranscriptResult  = $null
+$LastFileLength		   = $null
 $TaskStarted           = $false
 
 # Create the log path if it doesn't already exist
@@ -720,7 +721,13 @@ $timer.Add_Tick({
         return
     }
 
-    Update-TranscriptDisplay -TextBox $textBoxLog
+	if ((Test-Path $script:TranscriptLogPath)) {
+		$fileInfo = Get-Item $script:TranscriptLogPath
+		if ($fileInfo -And $fileInfo.Length -gt $script:LastFileLength) {
+			Update-TranscriptDisplay -TextBox $textBoxLog
+			$script:LastFileLength = $fileInfo.Length
+		}
+	}
 
     if ($script:LastTranscriptResult -eq $null -Or $script:LastTranscriptResult.StopTranscriptSeen) {
         $timer.Stop()
@@ -742,7 +749,7 @@ $timer.Add_Tick({
         return
     }
 
-    if ($null -ne $script:WatchStarted) {
+    if ($script:WatchStarted -ne $null) {
         $Elapsed = New-TimeSpan -Start $script:WatchStarted -End (Get-Date)
 
         if ($Elapsed.TotalMinutes -ge $script:PollingTimeoutMinutes) {
