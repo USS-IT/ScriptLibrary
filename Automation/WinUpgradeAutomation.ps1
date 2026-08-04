@@ -70,13 +70,12 @@ $EOLVER=26100		# Windows 11, 24H2
 $UPGRADEVER=26200   # Windows 11, 25H2
 # The searchbase to search for matching computers in AD.
 $SEARCHBASE = "OU=Computers,OU=USS,DC=win,DC=ad,DC=jhu,DC=edu"
-# Members in this group will be excluded from everything but reporting
-$EXCLUDE_GROUP = "USS-Win11UpgradeNotifyExclude"
 # Array of OU patterns to always exclude from everything but reporting
 # Ex: 'OU=USS\-IT'
 # Note disabled systems are excluded automatically.
-$EXCLUDE_OU_PATTERNS = @("OU=USS\-PRS", "OU=USS\-SEAM", "OU=USS\-OCL", "OU=USS\-SF")
-
+$EXCLUDE_OU_PATTERNS = @("OU=USS\-PRS", "OU=USS\-SEAM", "OU=USS\-SF", "OU=USS\-OCL")
+# Members in this group will be excluded from everything but reporting
+$EXCLUDE_GROUP = "USS-Win11UpgradeNotifyExclude"
 # AD Computer Properties/Attributes used in logic. Assumes the following:
 # extensionAttribute1 = asset tag
 # extensionAttribute2 = assigned user by userprinciplname (used first for "Contact User")
@@ -162,9 +161,9 @@ $EMAIL_SUBJECT = "[USS-IT] Windows 11 Upgrade Required"
 # $EMAIL_FOOTER_HTML
 $EMAIL_INTRO_HTML = @"
 <p>This is an automated message.</p>
-<p>You are receiving this email because your system{0} is currently running older version of Windows 11, and it needs to be upgraded.</p>
+<p>You are receiving this email because your system{0} is currently running an older version of Windows 11, and it needs to be upgraded.</p>
  
-<p>Starting on <b>August 27th</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
+<p>Starting on <b>November 1st</b>, Central IT will block updates for these versions. Please install the new version yourself by following the instructions in the follow link: <a href="https://t.jh.edu/USS-WindowsUpgrade">https://t.jh.edu/USS-WindowsUpgrade</a>.</p>
 
 <p>If you encounter any issues with the update, please <a href="https://johnshopkins.service-now.com/serviceportal?id=report_problem&sys_id=3f1dd0320a0a0b99000a53f7604a2ef9">open a helpdesk ticket</a>.</p>
  
@@ -461,7 +460,7 @@ function Get-ADUsersByGroup {
 }
 
 function Get-AnyPatternMatch {
-	# Returns the first matched pattern from any number of patterns.
+	# Returns the first matched pattern in an array of patterns.
 	param(
 		[Parameter(Mandatory=$true, Position=0)]
 		[string] $String,
@@ -584,20 +583,6 @@ if (($VIP_USER_GROUPS | Measure).Count -gt 0) {
 	}
 }
 
-# Get a list of users or systems excluded from all processing except reporting.
-$allExclusions = $null
-$allExclusionsCount = 0
-if (-Not [string]::IsNullOrEmpty($EXCLUDE_GROUP)) {
-	Write-Host("[{0}] Collecting users and computers to exclude from group [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $EXCLUDE_GROUP)
-	try {
-		$allExclusions = Get-ADGroupMember -Recursive $EXCLUDE_GROUP
-		$allExclusionsCount = ($allExclusions | Measure).Count
-	} catch {
-		Write-Error $_
-		$error_count++
-	}
-}
-
 # Get a list of systems excluded from notifications if unassigned.
 $notificationExclusions = $null
 $notificationExclusionsCount = 0
@@ -606,6 +591,20 @@ if (-Not [string]::IsNullOrEmpty($NOTIFICATION_EXCLUDE_GROUP)) {
 	try {
 		$notificationExclusions = Get-ADGroupMember -Recursive $NOTIFICATION_EXCLUDE_GROUP
 		$notificationExclusionsCount = ($notificationExclusions | Measure).Count
+	} catch {
+		Write-Error $_
+		$error_count++
+	}
+}
+
+# Get a list of users or systems excluded from all processing except reporting.
+$allExclusions = $null
+$allExclusionsCount = 0
+if (-Not [string]::IsNullOrEmpty($EXCLUDE_GROUP)) {
+	Write-Host("[{0}] Collecting users and computers to exclude from group [{1}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $EXCLUDE_GROUP)
+	try {
+		$allExclusions = Get-ADGroupMember -Recursive $EXCLUDE_GROUP
+		$allExclusionsCount = ($allExclusions | Measure).Count
 	} catch {
 		Write-Error $_
 		$error_count++
@@ -716,6 +715,10 @@ $processed_systems = foreach($comp in $comps) {
 					$contactuser = $null
 					$aduser = $null
 					Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Empty or in exclusion list" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u)
+				} elseif ($allExclusionsCount -gt 0 -And $aduser.distinguishedname -in $allExclusions) {
+						Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - in exclusion group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u, $EXCLUDE_GROUP)
+						$contactuser = $null
+						$aduser = $null
 				} else {
 					# Double-check user is valid by checking AD.
 					# Basically, if a user is disabled or outside of the default $USER_OU then we assume they're not a valid "User".
@@ -726,10 +729,6 @@ $processed_systems = foreach($comp in $comps) {
 						Write-Verbose("[{0}] [{1}] Got back AD user info for LastLogonUser: DN={2}, Company={3}, Enabled={4}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $aduser.distinguishedname, $aduser.Company, $aduser.Enabled)
 						if (-Not $aduser.Enabled -Or $aduser.distinguishedname -notlike "CN=*,$USER_OU") {
 							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - Not enabled or invalid OU" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u)
-							$contactuser = $null
-							$aduser = $null
-						} elseif ($allExclusionsCount -gt 0 -And $aduser.distinguishedname -in $allExclusions) {
-							Write-Verbose("[{0}] [{1}] Discarding LastLogonUser [{2}] - in exclusion group [{3}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $u, $EXCLUDE_GROUP)
 							$contactuser = $null
 							$aduser = $null
 						} elseif (-Not [string]::IsNullOrWhitespace($aduser.Company) -And ($CONTACTUSER_COMPANIES | Measure).Count -gt 0 -And $aduser.Company -notin $CONTACTUSER_COMPANIES) {
@@ -819,10 +818,10 @@ $processed_systems = foreach($comp in $comps) {
 				Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded user groups (blacklist)" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name)
 			} elseif ($allExclusionsCount -gt 0 -And $aduser.distinguishedname -ne $null -And $aduser.distinguishedname -in $allExclusions.distinguishedname) {
 				$skip_reason = "Excluded User (All)"
-				Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in excluded group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $EXCLUDE_GROUP)
+				Write-Warning("[{0}] [{1}] - SKIPPING: Assigned contact user is in exclusion group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $EXCLUDE_GROUP)
 			} elseif ($allExclusionsCount -gt 0 -And $comp.distinguishedname -ne $null -And $comp.distinguishedname -in $allExclusions.distinguishedname) {
-				$skip_reason = "Excluded User (All)"
-				Write-Warning("[{0}] [{1}] - SKIPPING: Computer is in excluded group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $EXCLUDE_GROUP)
+				$skip_reason = "Excluded Computer (All)"
+				Write-Warning("[{0}] [{1}] - SKIPPING: Computer is in exclusion group [{2}]" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $comp.Name, $EXCLUDE_GROUP)
 			# Check if we need to skip system due to being ineligible for upgrade.
 			} elseif ($is_incompatible -And $SKIP_INELIGIBLE_SYSTEMS) {
 				$skip_reason = "Incompatible System"
@@ -841,7 +840,7 @@ $processed_systems = foreach($comp in $comps) {
 			$contactuser = $contactuser.ToLower()
 			$do_notificationtoast = $true
 		} else {
-			$do_notificationtoast = ((-Not $is_assigned -Or $is_sharedsystem) -And ($notificationExclusionsCount -eq 0 -Or $comp.distinguishedname -notin $notificationExclusions) -And (-Not [string]::IsNullOrEmpty(Get-AnyPatternMatch $comp.distinguishedname $NOTIFICATION_EXCLUDE_OU_PATTERNS)))
+			$do_notificationtoast = ((-Not $is_assigned -Or $is_sharedsystem) -And ($notificationExclusionsCount -eq 0 -Or $comp.distinguishedname -notin $notificationExclusions) -And -Not [string]::IsNullOrEmpty(Get-AnyPatternMatch $comp.distinguishedname $NOTIFICATION_EXCLUDE_OU_PATTERNS))
 		}
 	}
 	
