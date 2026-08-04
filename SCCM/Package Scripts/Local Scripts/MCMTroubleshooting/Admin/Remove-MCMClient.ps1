@@ -67,6 +67,9 @@ try {
 $LogPath = "$LogDir\$($_scriptName).log"
 Start-Transcript $LogPath -Force
 
+# Add log start marker.
+Write-Host "** LOG START **"
+
 # ----------------------------
 # Helper functions
 # ----------------------------
@@ -187,6 +190,15 @@ function Get-SMSClient {
     return $null
 }
 
+function Start-CleanupBeforeExit {
+	param()
+	
+	try {
+		Write-Host "** LOG END **"
+		Stop-Transcript | Out-Null
+	} catch {}
+}
+
 # -- END FUNCTIONS --
 
 # Check if we require a code file to continue.
@@ -202,7 +214,7 @@ if (-Not [string]::IsNullOrEmpty($CodeFile)) {
 	} else {
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: Invalid code. Aborting."
 		Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -3"
-		Stop-Transcript | Out-Null
+		Start-CleanupBeforeExit | Out-Null
 		exit -3
 	}
 }
@@ -280,7 +292,7 @@ if ($ccmSetupMissing) {
 		} catch {
 			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: Failed to remove ccmexec service: $_"
 			Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -1"
-			Stop-Transcript | Out-Null
+			Start-CleanupBeforeExit | Out-Null
 			exit -1
 		}
 	}
@@ -303,12 +315,12 @@ if ($ccmSetupMissing) {
 					} elseif ($returnCode -eq 8) {
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode (ccmsetup already running). Check ccmsetup.log for more info."
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
-						Stop-Transcript | Out-Null
+						Start-CleanupBeforeExit | Out-Null
 						exit $returnCode
 					} else {
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: MCM client uninstall unsuccessful. Ccmsetup exited with return code $returnCode. Check ccmsetup.log for more info. Exiting with return code $returnCode."
 						Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code $returnCode."
-						Stop-Transcript | Out-Null
+						Start-CleanupBeforeExit | Out-Null
 						exit $returnCode
 					}
 				}
@@ -362,7 +374,7 @@ if ($ccmSetupMissing) {
 if ($svcCcmExec -And -Not [string]::IsNullOrEmpty($mcmVersion)) {
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] FATAL ERROR: ccmexec service and MCM client version both still exist after uninstall attempt. This will prevent the MCM client script from running on startup. Try running this script again."
 	Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code -2"
-	Stop-Transcript | Out-Null
+	Start-CleanupBeforeExit | Out-Null
 	exit -2
 }
 	
@@ -374,5 +386,5 @@ if ($NoRestart) {
 }
 				
 Write-Host "[$(Get-Date -f 'MM-dd-yyyy HH:mm:ss')] Exiting with return code 0"
-Stop-Transcript | Out-Null
+Start-CleanupBeforeExit | Out-Null
 exit 0
