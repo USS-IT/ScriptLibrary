@@ -22,6 +22,11 @@
 .NOTES
 	Author: Matt Carras (mcarras8)
 	Created: 07-07-2026
+	
+	Toggles assumes calls are given the same DNSServers each time.
+	
+	The script will try to save previously entered static DNS settings in the given static DNS settings file.
+	This may have unexpected behavior if you change the DNSServers given to the script between calls.
 #>
 #Requires -RunAsAdministrator
 param(
@@ -38,11 +43,17 @@ param(
 		
 	[switch] $Notify,
 	
-	[string] $LogDir = "C:\USS\Logs\Packages\SwitchDNS"
+	[string] $LogDir = "C:\USS\Logs\Packages\NetworkUtilities"
 )
 
+# ----------------------------
+# Configuration
+# ----------------------------
+
 # Task name for the on startup reset task.
-$ResetTaskName = "USS-SwitchDNS-Reset"
+$ResetTaskName = "USS-SwitchDNS-ResetOnStartup"
+
+# -- END CONFIGURATION --
 
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
@@ -56,6 +67,12 @@ if (-not (Test-Path $LogDir -PathType Container)) {
 	$null = New-Item -Path $LogDir -ItemType Directory
 }
 Start-Transcript $LogPath -Force
+
+# ----------------------------
+# Helper functions
+# ----------------------------
+
+# -- END FUNCTIONS --
 
 $AddressFamily = $DNSServers.AddressFamily | Select -Unique
 if (($AddressFamily | Measure).Count -gt 1) {
@@ -73,112 +90,151 @@ $exitCode = 0
 try {
 	# Get all physical network adapters
 	$adapters = Get-NetAdapter -Physical
-
+	
+	$adaptersWithDNS = New-Object System.Collections.ArrayList
+	$staticDNS = @{}
+	$toggleMode = $null
+	$dnsFound = $false
+	$notifyType = $null
+	# Pre-parse the adapters in case our mode is Reset or Toggle.
 	foreach ($adapter in $adapters) {
 		Write-Host "Checking [$($adapter.InterfaceDescription)] with status [$($adapter.Status)]"
 		$ifIndex = $adapter.ifIndex
 		$currentDns = (Get-DnsClientServerAddress -InterfaceIndex $ifIndex -AddressFamily $AddressFamily).ServerAddresses
 		Write-Host "Current $AddressFamily DNS: $($currentDns -join ',')"
 		
-		if ($Mode -ne 'Add' -And $currentDns -contains $DNSServers.IPAddressToString) {
-			$prevDNS = $null
-			Write-Host "DNS currently includes $($DNSServers.IPAddressToString -join ','). Checking if we have any previously saved static DNS settings..."
-			if ((Test-Path $StaticDNSJson -PathType Leaf)) {
-				$prevDNS = Get-Content -Path $StaticDNSJson
-				if (-Not [string]::IsNullOrEmpty($prevDNS)) {
-					$prevDNS = $prevDNS | ConvertFrom-Json | where {$DNSServers.IPAddressToString -notcontains $_}
-				}
-			}
-			
-			if ($prevDNS -ne $null -And -Not [string]::IsNullOrWhitespace(($prevDNS | Select -First 1))) {
-				Write-Host "Reverting to previous DNS [$($prevDNS -join ',')]"
-				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS -ErrorAction Stop
-				Clear-Content $StaticDNSJson
-			} else {
-				Write-Host "Reverting to DHCP DNS"
-				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction Stop
-			}
-			
-			# Unregister reset task if it exists.
-			if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
-				Unregister-ScheduledTask -TaskName $ResetTaskName -Confirm:$false
-			}
-			
-			if ($Notify) {
-				Write-Host "Sending notification"
-				Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-SwitchDNS-Reverted' -EventID 1000 -EntryType Information -Message 'Notify of successful DNS change'
-			}
-		} elseif ($Mode -ne 'Reset' -And $adapter.Status -eq 'Up') {
-			Write-Host "Adapter is currently up, and DNS does not include $($DNSServers.IPAddressToString -join ',')."
+		$hasGivenDNS = ($currentDns -contains $DNSServers.IPAddressToString)
 		
-			# Check if we have any statically added DNS already.
-			$key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
-			$staticDNS = Get-ItemProperty $key -ErrorAction Stop | Select -ExpandProperty NameServer
-			if (-Not [string]::IsNullOrEmpty($staticDNS)) {
-				Write-Host "Current static DNS: $staticDNS"
-				$dir = Split-Path -Parent $StaticDNSJson -ErrorAction Stop
-				if (-not (Test-Path $dir -PathType Container)) {
-					$null = New-Item -Path $dir -ItemType Directory -ErrorAction Stop
+		$o = [PSCustomObject]@{
+			adapter = $adapter
+			DNS = $currentDNS
+			HasGivenDNS = $hasGivenDNS
+		}
+		$adaptersToModify.Add($o)
+		
+		# Set the effective toggle mode.
+		if ($Mode -eq 'Toggle') {
+			if ($hasGivenDNS) {
+				if (-Not $toggleMode) {
+					$toggleMode = 'Reset'
+				} elseif ($toggleMode -eq 'Add') {
+					$toggleMode = 'Both'
 				}
-				$staticDNS = $staticDNS -split ',' | where {$DNSServers.IPAddressToString -notcontains $_}
-				if (($staticDNS | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($staticDNS | Select -First 1))) {
-					Write-Host "Saving static DNS to [$StaticDNSJson]: $($staticDNS -join ',')"
-					Set-Content -Path $StaticDNSJson -Value ($currentDns | ConvertTo-Json) -ErrorAction Stop
+			} elseif ($adapter.Status -eq 'Up') {
+				if (-Not $toggleMode) {
+					$toggleMode = 'Add'
+				} elseif ($toggleMode -eq 'Reset') {
+					$toggleMode = 'Both'
 				}
 			}
-
-			if ($DNSOverride) {
-				$newDNS = $DNSServers.IPAddressToString
-			} else {
-				$newDNS = @($currentDns) + $DNSServers.IPAddressToString
-			}
-			Write-Host "Setting DNS servers to: $($newDNS -join ',')"
-			Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $newDNS -ErrorAction Stop
-			
-			if ($ResetOnStartup) {				
-				if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
-					Write-Host "Scheduled task [$ResetTaskName] already exists. Not creating."
-				} else {
-					Write-Host "Creating AtStartup scheduled task to reset DNS..."
-					$scriptPath = $PSCommandPath
-					If ([string]::IsNullOrEmpty($scriptPath)) {
-						$scriptPath = "C:\USS\Scripts\Admin\SwitchDNS\Switch-DNS.ps1"
+		}
+	}
+	if ($Mode -eq 'Reset' -And -not $dnsFound) {
+		Write-Host "No adapters currently include DNS servers $($DNSServers.IPAddressToString -join ',')."
+	} else {
+		# Loop over the previously saved adapters again.
+		foreach ($adapterInfo in $adaptersWithDNS) {
+			if (($Mode -eq 'Reset' -Or $Mode -eq 'Toggle') -And $adapterInfo.HasGivenDNS) {
+				$prevDNS = $null
+				Write-Host "Reset Mode -- DNS currently includes $($DNSServers.IPAddressToString -join ','). Checking if we have any previously saved static DNS settings..."
+				if ((Test-Path $StaticDNSJson -PathType Leaf)) {
+					$prevDNS = Get-Content -Path $StaticDNSJson
+					if (-Not [string]::IsNullOrEmpty($prevDNS)) {
+						$prevDNS = $prevDNS | ConvertFrom-Json | where {$DNSServers.IPAddressToString -notcontains $_}
 					}
-				
-					$action = New-ScheduledTaskAction `
-						-Execute "powershell.exe" `
-						-Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode `"Reset`""
-					
-					$trigger = New-ScheduledTaskTrigger -AtStartup
-					
-					$principal = New-ScheduledTaskPrincipal `
-						-UserId "SYSTEM" `
-						-LogonType ServiceAccount `
-						-RunLevel Highest
-						
-					$settings = New-ScheduledTaskSettingsSet `
-						-AllowStartIfOnBatteries `
-						-DontStopIfGoingOnBatteries `
-						-StartWhenAvailable `
-						-ExecutionTimeLimit (New-TimeSpan -Hours 2) `
-						-Hidden
-			
-					$task = Register-ScheduledTask `
-						-TaskName $ResetTaskName `
-						-Action $action `
-						-Trigger $trigger `
-						-Principal $principal `
-						-Settings $settings
-						-Description "Reverts DNS changes from Switch-DNS.ps1."
-						-Force
-
-					Write-Host "Scheduled task [$($task.TaskName)] created successfully."
 				}
-			}
+				
+				if ($prevDNS -ne $null -And -Not [string]::IsNullOrWhitespace(($prevDNS | Select -First 1))) {
+					Write-Host "Reverting to previous DNS [$($prevDNS -join ',')]"
+					Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $prevDNS -ErrorAction Stop
+					Clear-Content $StaticDNSJson
+				} else {
+					Write-Host "Reverting to DHCP DNS"
+					Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction Stop
+				}
+				
+				# Unregister reset task if it exists.
+				if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
+					Unregister-ScheduledTask -TaskName $ResetTaskName -Confirm:$false
+				}
+				
+				if ($Notify) {
+					Write-Host "Sending notification"
+					Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-SwitchDNS-Reverted' -EventID 1000 -EntryType Information -Message 'Notify of successful DNS change'
+				}
+					
+			} elseif ($Mode -eq 'Add' -Or $Mode -eq 'Toggle' -And ) {
+				Write-Host "Add Mode -- Adapter is currently up, and DNS does not include $($DNSServers.IPAddressToString -join ',')."
 			
-			if ($Notify) {
-				Write-Host "Sending notification"
-				Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-SwitchDNS-Changed' -EventID 1000 -EntryType Information -Message 'Notify of successful DNS change'
+				# Check if we have any statically added DNS already.
+				$key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
+				$staticDNS = Get-ItemProperty $key -ErrorAction Stop | Select -ExpandProperty NameServer
+				if (-Not [string]::IsNullOrEmpty($staticDNS)) {
+					Write-Host "Current static DNS: $staticDNS"
+					$dir = Split-Path -Parent $StaticDNSJson -ErrorAction Stop
+					if (-not (Test-Path $dir -PathType Container)) {
+						$null = New-Item -Path $dir -ItemType Directory -ErrorAction Stop
+					}
+					$staticDNS = $staticDNS -split ',' | where {$DNSServers.IPAddressToString -notcontains $_}
+					if (($staticDNS | Measure).Count -gt 0 -And -Not [string]::IsNullOrWhitespace(($staticDNS | Select -First 1))) {
+						Write-Host "Saving static DNS to [$StaticDNSJson]: $($staticDNS -join ',')"
+						Set-Content -Path $StaticDNSJson -Value ($currentDns | ConvertTo-Json) -ErrorAction Stop
+					}
+				}
+
+				if ($DNSOverride) {
+					$newDNS = $DNSServers.IPAddressToString
+				} else {
+					$newDNS = @($currentDns) + $DNSServers.IPAddressToString
+				}
+				Write-Host "Setting DNS servers to: $($newDNS -join ',')"
+				Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $newDNS -ErrorAction Stop
+				
+				if ($ResetOnStartup) {				
+					if ((Get-ScheduledTask -TaskName $ResetTaskName -ErrorAction SilentlyContinue)) {
+						Write-Host "Scheduled task [$ResetTaskName] already exists. Not creating."
+					} else {
+						Write-Host "Creating AtStartup scheduled task to reset DNS..."
+						$scriptPath = $PSCommandPath
+						If ([string]::IsNullOrEmpty($scriptPath)) {
+							$scriptPath = "C:\USS\Scripts\Admin\NetworkUtilities\Switch-DNS.ps1"
+						}
+					
+						$action = New-ScheduledTaskAction `
+							-Execute "powershell.exe" `
+							-Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode `"Reset`""
+						
+						$trigger = New-ScheduledTaskTrigger -AtStartup
+						
+						$principal = New-ScheduledTaskPrincipal `
+							-UserId "SYSTEM" `
+							-LogonType ServiceAccount `
+							-RunLevel Highest
+							
+						$settings = New-ScheduledTaskSettingsSet `
+							-AllowStartIfOnBatteries `
+							-DontStopIfGoingOnBatteries `
+							-StartWhenAvailable `
+							-ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+							-Hidden
+				
+						$task = Register-ScheduledTask `
+							-TaskName $ResetTaskName `
+							-Action $action `
+							-Trigger $trigger `
+							-Principal $principal `
+							-Settings $settings
+							-Description "Reverts DNS changes from the USS NetworkUtilities SwitchDNS script on startup. Version: 1.0"
+							-Force
+
+						Write-Host "Scheduled task [$($task.TaskName)] created successfully."
+					}
+				}
+				
+				if ($Notify) {
+					Write-Host "Sending notification"
+					Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-SwitchDNS-Changed' -EventID 1000 -EntryType Information -Message 'Notify of successful DNS change'
+				}
 			}
 		}
 	}
