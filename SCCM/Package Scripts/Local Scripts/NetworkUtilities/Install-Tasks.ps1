@@ -1,15 +1,11 @@
 <#
 .SYNOPSIS
-    Creates a custom event trigger and scheduled task for re-enable WiFi adapters
+    Creates custom event triggers and scheduled tasks for invoking network troubleshooting scripts
 .DESCRIPTION
     This script:
     1. Creates a custom shared event log and unique source
     2. Registers a scheduled task triggered by the custom event
     3. The tasks run the applicable scripts
-.PARAMETER ScriptPaths
-	The full path(s) to the scripts to run.
-.PARAMETER LogDir
-	The directory to output logs. Default is C:\USS\Logs
 .NOTES
 	Author: Matt Carras (mcarras8)
 	Created: 06-30-2026
@@ -26,13 +22,13 @@
 # Configuration Variables
 # Shared by all USS scripts using our custom Event Log
 $SharedEventLog = "USS-EventLog"
-$LogDir = "C:\USS\Logs\Packages\Reenable_WiFi"
-$ScriptPath = "C:\USS\Scripts\Admin\Reenable_WiFi\Enable-WiFiAdapters.ps1"
+$LogDir = "C:\USS\Logs\Packages\NetworkUtilities"
+$ScriptPath = "C:\USS\Scripts\Admin\NetworkUtilities\Switch-DNS.ps1"
 
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
 } catch {
-	$_scriptName = "Install-Tasks-UNKNOWN.ps1"
+	$_scriptName = "Install-Tasks.ps1"
 }
 $LogPath = "$LogDir\$($_scriptName).log"
 
@@ -47,27 +43,47 @@ Argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPaths`""
 #>
 $EventsAndTasks = @(
 	@{
-		EventSource = "Enable-WiFi"		
+		EventSource = "SwitchDNS-Toggle"		
 		EventID = 1000									
-		TaskName = "USS-Enable-WiFiAdapters"
-		TaskDescription = "Re-enables all wifi adapters."
+		TaskName = "USS-SwitchDNS-Toggle"
+		TaskDescription = "Toggles between adding or removing temporary public DNS servers to the active network adapter. Source: USS NetworkUtilities package. Version: 1.0"
 		Execute = "powershell.exe"
-		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify"
+		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify -ResetOnStartup -Mode `"Toggle`""
+		#WorkingDirectory = ""
+	},
+	
+	@{
+		EventSource = "SwitchDNS-Add"		
+		EventID = 1000									
+		TaskName = "USS-SwitchDNS-Add"
+		TaskDescription = "Adds temporary public DNS servers to the active network adapter. Source: USS NetworkUtilities package. Version: 1.0"
+		Execute = "powershell.exe"
+		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify -ResetOnStartup -Mode `"Add`""
+		#WorkingDirectory = ""
+	},
+	
+	@{
+		EventSource = "SwitchDNS-Reset"		
+		EventID = 1000									
+		TaskName = "USS-SwitchDNS-Reset"
+		TaskDescription = "Removes any temporary public DNS servers previously added to the active network adapter. Source: USS NetworkUtilities package. Version: 1.0"
+		Execute = "powershell.exe"
+		Argument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -LogDir `"$LogDir`" -Notify -Mode `"Reset`""
 		#WorkingDirectory = ""
 	},
 	
 	# Custom events for user notifications.
 	# We'll need to create the Scheduled Tasks under the user's account later.
 	@{
-		EventSource = "Notify-Reenable_WiFi-Success"		
+		EventSource = "Notify-SwitchDNS-Changed"		
 		EventID = 1000									
 	},
 	@{
-		EventSource = "Notify-Reenable_WiFi-Failure"		
+		EventSource = "Notify-SwitchDNS-Failure"		
 		EventID = 1000
 	},
 	@{
-		EventSource = "Notify-Reenable_WiFi-Missing"		
+		EventSource = "Notify-SwitchDNS-Reverted"		
 		EventID = 1000
 	}
 )
