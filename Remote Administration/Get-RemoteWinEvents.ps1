@@ -99,7 +99,7 @@ $results = foreach ($o in $FilterTable) {
 		}
 	
 		if ($events.Count -eq 0) {
-			Write-Host "No entries matching Event IDs $($filterHash.Id -join ',') were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
+			Write-Host "No entries matching filter were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
 		} else {
 			Write-Host "Found $($events.Count) event(s) on '$systemName' for $($startDate.ToString('yyyy-MM-dd')):"
 			$events | Select-Object TimeCreated,
@@ -111,7 +111,7 @@ $results = foreach ($o in $FilterTable) {
 		}
 	} catch [System.Exception] {
 		if ($_.Exception.Message -like "*No events were found*") {
-			Write-Host "ERROR: No entries matching Event IDs $($filterHash.Id -join ',') were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
+			Write-Host "ERROR: No entries matching filter were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
 		} else {
 			Write-Error "Failed to query '$systemName': $($_.Exception.Message)"
 		}
