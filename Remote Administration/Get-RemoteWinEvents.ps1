@@ -102,7 +102,8 @@ $results = foreach ($o in $FilterTable) {
 			Write-Host "No entries matching filter were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
 		} else {
 			Write-Host "Found $($events.Count) event(s) on '$systemName' for $($startDate.ToString('yyyy-MM-dd')):"
-			$events | Select-Object TimeCreated,
+			$events | Select-Object @{N="System"; E={$systemName}},
+									TimeCreated,
 									Id,
 									@{N="Source"; E={$_.ProviderName}},
 									@{N="Log";    E={$_.LogName}},
@@ -116,6 +117,17 @@ $results = foreach ($o in $FilterTable) {
 			Write-Error "Failed to query '$systemName': $($_.Exception.Message)"
 		}
 	}
+}
+
+if ($results) {
+	$results = $results | Select System,
+								 @{N="Results"; E={if ($queried.ContainsKey($_.System)) { $queried[$_.System].Results.Keys | foreach { $_ } }}},
+								 TimeCreated,
+								 Id,
+								 Source,
+								 Log,
+								 LevelDisplayName,
+								 Message
 }
 
 if (-not [string]::IsNullOrEmpty($CSV)) {
