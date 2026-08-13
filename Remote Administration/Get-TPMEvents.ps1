@@ -40,9 +40,9 @@ $queried = @{}
 foreach ($system in $_SystemSets) {
 	$systemName = $system.System
 	
-	if (-Not (Test-Connection -TargetName $systemName -Count 1 -Quiet) -And 
-		-Not (Test-Connection -TargetName $systemName -Count 1 -Quiet) -And 
-		-Not (Test-Connection -TargetName $systemName -Count 1 -Quiet)) {
+	if (-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet) -And 
+		-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet) -And 
+		-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet)) {
 		
 		Write-Warning "'$systemName' did not respond to any ping attempts. Skipping."
 		continue
@@ -76,7 +76,7 @@ foreach ($system in $_SystemSets) {
 			$filterHash = @{
 				LogName      = "System"
 				ProviderName = "Microsoft-Windows-TPM-WMI"
-				Id           = @(1808, 1801, 1034)
+				#Id           = @(1808, 1801, 1034)
 				StartTime    = $startTime
 				EndTime      = $endTime
 			}
