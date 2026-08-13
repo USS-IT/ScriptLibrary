@@ -8,11 +8,16 @@
 # StartTime - Start datetime to filter. Optional.
 # EndTime - End datetime to filter. Optional.
 # At least ComputerName, LogName, or ProviderName is required.
+#
+# FocusID - Check these IDs without datetime restrictions.
+#
 
 param(
 	[Parameter(Mandatory=$true)]
     [PSObject[]] $FilterTable,
 
+	[int[]] $FocusID,
+	
 	[string] $CSV,
 	
 	[switch] $NoPause
@@ -38,7 +43,7 @@ $results = foreach ($o in $FilterTable) {
 		continue
 	}
 	
-	Write-Host "Checking if '$systemName' is online..."
+	Write-Host "** Checking if '$systemName' is online..."
 	if (-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet) -And 
 		-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet) -And 
 		-Not (Test-Connection -ComputerName $systemName -Count 1 -Quiet)) {
@@ -57,12 +62,8 @@ $results = foreach ($o in $FilterTable) {
 	}
 
 	try {
-		if (-Not [string]::IsNullOrEmpty($prevResult)) {
-			Write-Host "'$systemName' appears to be online. Logged result was [$prevResult]. Querying..."
-		} else {
-			Write-Host "'$systemName' appears to be online. Querying..."
-		}
-
+		Write-Host "'$systemName' appears to be online. Querying..."
+		
 		$startDate = $o.StartTime -as [datetime]
 		$endDate = $o.EndTime -as [datetime]
 		if ($startDate -And -not $endDate) {
@@ -99,9 +100,36 @@ $results = foreach ($o in $FilterTable) {
 		}
 	
 		if ($events.Count -eq 0) {
-			Write-Host "No entries matching filter were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
+			Write-Host "No entries matching filter were found on '$systemName'."
 		} else {
-			Write-Host "Found $($events.Count) event(s) on '$systemName' for $($startDate.ToString('yyyy-MM-dd')):"
+			# Also add ID if given
+			if ($FocusID) {
+				Write-Host "Also querying for IDs [$($FocusID -join ',')]..."
+				$extraIds = @()
+				foreach ($id in $FocusID) {
+					if ($id -in $events.Id) {
+						$extraIds += $id
+					}
+				}
+				if ($extraIds.Count -gt 0) {
+					$extraEvents = $null
+					if ($filterHash.ContainsKey('StartTime')) {
+						$filterHash.Remove('StartTime')
+					}
+					if ($filterHash.ContainsKey('EndTime')) {
+						$filterHash.Remove('EndTime')
+					}
+					$filterHash['Id'] = $extraIds
+					$extraEvents = Get-WinEvent -ComputerName $systemName `
+								   -FilterHashtable $filterHash `
+								   -ErrorAction SilentlyContinue
+					if ($extraEvents -And $extraEvents.Count -gt 0) {
+						$events += $extraEvents
+					}
+				}
+			}
+			
+			Write-Host "Found $($events.Count) event(s) on '$systemName' matching filters."
 			$events | Select-Object @{N="System"; E={$systemName}},
 									TimeCreated,
 									Id,
@@ -112,7 +140,7 @@ $results = foreach ($o in $FilterTable) {
 		}
 	} catch [System.Exception] {
 		if ($_.Exception.Message -like "*No events were found*") {
-			Write-Host "ERROR: No entries matching filter were found on '$systemName' for $($startDate.ToString('yyyy-MM-dd'))."
+			Write-Host "ERROR: No entries matching filter were found on '$systemName'."
 		} else {
 			Write-Error "Failed to query '$systemName': $($_.Exception.Message)"
 		}
@@ -121,7 +149,7 @@ $results = foreach ($o in $FilterTable) {
 
 if ($results) {
 	$results = $results | Select System,
-								 @{N="Results"; E={if ($queried.ContainsKey($_.System)) { $queried[$_.System].Results.Keys | foreach { $_ } }}},
+								 @{N="Results"; E={if ($queried.ContainsKey($_.System)) { ($queried[$_.System].Results.Keys | foreach { $_ }) -join ", " }}},
 								 TimeCreated,
 								 Id,
 								 Source,
@@ -131,12 +159,13 @@ if ($results) {
 }
 
 if (-not [string]::IsNullOrEmpty($CSV)) {
-	Write-Host "Writing results [$CSV]..."
+	Write-Host "Exporting results to [$CSV]..."
 	$results | Export-CSV -NoTypeInformation $CSV
 } else {
 	$results
+	
+	if (-Not $NoPause) {
+		$_ = Read-Host ":Press any key to exit"
+	}
 }
 
-if (-Not $NoPause) {
-	$_ = Read-Host ":Press any key to exit"
-}
