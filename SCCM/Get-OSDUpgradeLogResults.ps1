@@ -16,7 +16,6 @@ Write-Host "Searching [$LogsDir] for result directories..."
 $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
     ForEach-Object {
 		
-
 		try {
 			$foldername = $_.FullName -split '\\' | Select -Last 1
 			if (-Not $foldername) {
@@ -52,15 +51,23 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 				}
 				if ($content -match "UpdateStartTime = (.+)") {
 					$upgradeStart = $Matches[1]
+				} else {
+					$upgradeStart = $null
 				}
 				if ($content -match "UpdateEndTime = (.+)") {
 					$upgradeEnd = $Matches[1]
+				} else {
+					$upgradeEnd = $null
 				}
 				if ($content -match "RollbackStartTime = (.+)") {
 					$rollbackStart = $Matches[1]
+				} else {
+					$rollbackStart = $null
 				}
 				if ($content -match "RollbackEndTime = (.+)") {
 					$rollbackEnd = $Matches[1]
+				} else {
+					$rollbackEnd = $null
 				}
 			}
 			
