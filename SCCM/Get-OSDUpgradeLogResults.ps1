@@ -33,7 +33,13 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 			$logDate = $Matches[2]
 			$logTime = $Matches[3]
 			$logResult = $Matches[4]
-		
+			$lastop = $null
+			$lastop_error = $null
+			$upgradeStart = $null
+			$upgradeEnd = $null
+			$rollbackStart = $null
+			$rollbackEnd = $null
+			
 			$diagfp = Join-Path $_.FullName 'setupdiagresults.log'
 			if (-Not (Test-Path $diagfp )) {
 				Write-Warning "Cannot find file: [$diagfp], skipping setup file parsing"
@@ -41,33 +47,21 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 				$content = Get-Content $diagfp -Raw
 				if ($content -match "Last Operation = (.+)") {
 					$lastop = $Matches[1]
-				} else {
-					$lastop = $null
 				}
 				if ($content -match "Error = (.+)") {
 					$lastop_error = $Matches[1]
-				} else {
-					$lastop_error = $null
 				}
 				if ($content -match "UpdateStartTime = (.+)") {
 					$upgradeStart = $Matches[1]
-				} else {
-					$upgradeStart = $null
 				}
 				if ($content -match "UpdateEndTime = (.+)") {
 					$upgradeEnd = $Matches[1]
-				} else {
-					$upgradeEnd = $null
 				}
 				if ($content -match "RollbackStartTime = (.+)") {
 					$rollbackStart = $Matches[1]
-				} else {
-					$rollbackStart = $null
 				}
 				if ($content -match "RollbackEndTime = (.+)") {
 					$rollbackEnd = $Matches[1]
-				} else {
-					$rollbackEnd = $null
 				}
 			}
 			
