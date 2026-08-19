@@ -7,7 +7,7 @@ param(
 	[string] $CSV
 )
 
-if (!(Test-Path $LogsDir)) {
+if (-Not (Test-Path $LogsDir) ) {
 	Write-Error "[$LogsDir] does not exist or is not accessible."
 	exit 1
 }
@@ -27,7 +27,7 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 			Write-Warning "Error parsing [$($_.FullName)]: $($_.Exception.Message)"
 		}
 		
-		Write-Host "Found [$($_.FullName)] with folder name [$foldername]"
+		Write-Host "Found [$($_.FullName)] with folder name [$foldername]. Parsing folder name and setup files..."
 		
 		if ($foldername -match "([^\.]+)\.([\d\.]+)@([\d\s\.]+)\.(.+)`$") {
 			$systemName = $Matches[1]
@@ -37,7 +37,7 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 		
 			$diagfp = Join-Path $_.FullName 'setupdiagresults.log'
 			if (-Not (Test-Path $diagfp )) {
-				Write-Warning "[$diagfp] does not exist, not parsing"
+				Write-Warning "Cannot find file: [$diagfp], skipping setup file parsing"
 			} else {
 				$content = Get-Content $diagfp -Raw
 				if ($content -match "Last Operation = (.+)") {
@@ -83,32 +83,50 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
     }
 
 if (-Not $results -Or $results.Count -eq 0) {
-	Write-Warning "No results to export."
+	Write-Host "** No results to export."
 } else {
-	Write-Host "* Exporting $($results.Count) results to [$CSV]..."
+	Write-Host "** Exporting $($results.Count) results to [$CSV]..."
+	# First sort by date & time.
+	$sorted = @($results | Sort-Object Date, Time)
+	
 	# Add whether any items later upgraded successfully and attempt #.
+	# Iterating $sorted preserves Date/Time order within each group automatically.
 	$sysResults = @{}
-	foreach ($system in $results.System) {
-		if (-Not $sysResults.ContainsKey($system)) {
-			$sysResults[$system] = $results | where {$_.System -eq $system} | Sort Date,Time
+	foreach ($row in $sorted) {
+		if (-not $sysResults.ContainsKey($row.System)) {
+			$sysResults[$row.System] = [System.Collections.ArrayList]::new()
+		}
+		[void]$sysResults[$row.System].Add($row)
+	}
+
+	# Exits early on first success hit — no redundant scanning per row later.
+	$hasSuccess = @{}
+	foreach ($sys in $sysResults.Keys) {
+		$hasSuccess[$sys] = $false
+		foreach ($row in $sysResults[$sys]) {
+			if ($row.Result -eq 'upgrade_success') {
+				$hasSuccess[$sys] = $true
+				break
+			}
 		}
 	}
-	$results | Select 'System','Result','Date','Time',
-		@{N="Eventual Success"; E={ 
-			if ($_.Result -ne 'upgrade_success') {
-				($sysResults[$_.System] | where {$_.Result -eq 'upgrade_success'} | Measure).Count -gt 0
-			} else {
-				''
-			}
-		}},
-		@{N="Attempt"; E={ 
-			if ($sysResults[$_.System] -is [array]) {
-				[Array]::IndexOf($sysResults[$_.System], $_) + 1
-			} else {
-				1
-			}
-		}},
-		'Error','Last Op before Error','Upgrade Start Time','Upgrade End Time','Rollback Start Time','Rollback End Time','Log Path' |
-		Sort Date,Time |
+
+	# Uses object reference as hashtable key.
+	$attemptLookup = [System.Collections.Hashtable]::new($sorted.Count)
+	foreach ($sys in $sysResults.Keys) {
+		$group = $sysResults[$sys]
+		for ($i = 0; $i -lt $group.Count; $i++) {
+			$attemptLookup[$group[$i]] = $i + 1
+		}
+	}
+
+	$sorted |
+		Select-Object 'System', 'Result', 'Date', 'Time',
+			@{N = 'Eventual Success'; E = {
+				if ($_.Result -ne 'upgrade_success') { $hasSuccess[$_.System] } else { '' }
+			}},
+			@{N = 'Attempt'; E = { $attemptLookup[$_] }},
+			'Error', 'Last Op before Error', 'Upgrade Start Time', 'Upgrade End Time',
+			'Rollback Start Time', 'Rollback End Time', 'Log Path' |
 		Export-CSV -NoTypeInformation $CSV
 }
