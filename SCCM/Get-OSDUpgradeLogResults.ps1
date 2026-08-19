@@ -28,6 +28,8 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 		
 		Write-Host "Found [$($_.FullName)] with folder name [$foldername]. Parsing folder name and setup files..."
 		
+		# Folders names are constructed by the ECI upgrade task sequence.
+		# Example: USS-AC-56NYL84.2026.08.04@12.22.18.rollback_success
 		if ($foldername -match "([^\.]+)\.([\d\.]+)@([\d\s\.]+)\.(.+)`$") {
 			$systemName = $Matches[1]
 			$logDate = $Matches[2]
@@ -42,14 +44,18 @@ $results = Get-ChildItem -Path (Join-Path $LogsDir '\*') -Directory |
 			
 			$diagfp = Join-Path $_.FullName 'setupdiagresults.log'
 			if (-Not (Test-Path $diagfp )) {
-				Write-Warning "Cannot find file: [$diagfp], skipping setup file parsing"
+				Write-Warning "Cannot find file: [$diagfp], skipping setup file parsing with result [$logResult]"
 			} else {
+				# Parse the setupdiagresults.log file for keywords.
 				$content = Get-Content $diagfp -Raw
 				if ($content -match "Last Operation = (.+)") {
 					$lastop = $Matches[1]
 				}
 				if ($content -match "Error = (.+)") {
 					$lastop_error = $Matches[1]
+				}
+				if ([string]::IsNullOrEmpty($lastop) -And [string]::IsNullOrEmpty($lastop_error)) {
+					$lastop_error = 'UNKNOWN'
 				}
 				if ($content -match "UpdateStartTime = (.+)") {
 					$upgradeStart = $Matches[1]
