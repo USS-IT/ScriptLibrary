@@ -39,7 +39,7 @@ if ([string]::IsNullOrWhitespace($ComputerName)) {
 	if ($doPingSuccessContinue -eq "Y") {
 		# Use WMI to check for all requests
 		# CCM_ExecutionRequestEx should also include CCM_TSExecutionRequest
-		$results=(gwmi -ComputerName $ComputerName -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -Filter "CompletionState = 'Failure'")
+		$results=(Get-CIMInstance -ComputerName $ComputerName -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -Filter "CompletionState = 'Failure'")
 		if (($results | Measure).Count -le 0) {
 			Write-Host "** No failed requests found on [$ComputerName]"
 		} else {

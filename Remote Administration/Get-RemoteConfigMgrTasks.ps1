@@ -25,7 +25,7 @@ if ([string]::IsNullOrWhitespace($comp)) {
 	
 	# Use WMI to check for all requests
 	# CCM_ExecutionRequestEx should also include CCM_TSExecutionRequest
-	$results=(gwmi -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -ComputerName $comp)
+	$results=(Get-CIMInstance -Namespace root\ccm\SoftMgmtAgent -Class CCM_ExecutionRequestEx -ComputerName $comp)
 	if (($results | Measure).Count -le 0) {
 		Write-Host "** No requests found on [$comp]"
 	} else {
