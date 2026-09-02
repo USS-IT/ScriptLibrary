@@ -498,7 +498,7 @@ $RECYCLE.BIN/
 *.msp
 
 # Windows shortcuts
-*.lnk
+#*.lnk
 
 ### Groovy template
 # .gitignore created from Groovy contributors in https://github.com/apache/groovy/blob/master/.gitignore
