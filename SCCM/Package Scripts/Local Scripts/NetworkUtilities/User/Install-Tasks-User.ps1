@@ -15,10 +15,10 @@
 # Configuration Variables
 # Shared by all USS scripts using our custom Event Log
 $SharedEventLog = "USS-EventLog"
-$LogDir = "C:\USS\Logs\User\SwitchDNS"
-$ScriptPath = "C:\USS\Scripts\User\SwitchDNS\Show-Toast.ps1"
+$LogDir = "C:\USS\Logs\User\NetworkUtilities"
+$ScriptDir = "C:\USS\Scripts\User\NetworkUtilities"
+$ScriptPath = "$ScriptDir\Show-Toast.ps1"
 # Path to the script used by our shortcut. Used for LauncherID.
-$ShortcutScriptPath = "C:\USS\Scripts\User\SwitchDNS\SwitchDNS.cmd"
 
 try {
 	$_scriptName = Split-Path -Leaf $PSCommandPath
@@ -43,9 +43,9 @@ $Tasks = @(
 		EventSource = "Notify-SwitchDNS-Changed"		
 		EventID = 1000									
 		TaskName = "USS-Notify-SwitchDNS-Changed"
-		TaskDescription = "Displays a toast notification when DNS is successfully changed. Version: 1.0"
+		TaskDescription = "Displays a toast notification when DNS is successfully changed. Version: 1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
-		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"DNS changed successfully.`" -Title `"DNS Changed`" -LauncherID `"C:\USS\Scripts\User\SwitchDNS\AddDNS.cmd`""
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"DNS changed successfully.`" -Title `"DNS Changed`" -LauncherID `"$ScriptDir\AddDNS.cmd`""
 		#WorkingDirectory = ""
 	},
 	
@@ -53,9 +53,9 @@ $Tasks = @(
 		EventSource = "Notify-SwitchDNS-Reverted"		
 		EventID = 1000									
 		TaskName = "USS-Notify-SwitchDNS-Reverted"
-		TaskDescription = "Displays a toast notification when DNS is successfully reverted back to default. Version: 1.0"
+		TaskDescription = "Displays a toast notification when DNS is successfully reverted back to default. Version: 1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
-		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"DNS reset successfully.`" -Title `"DNS Reset`" -LauncherID `"C:\USS\Scripts\User\SwitchDNS\ResetDNS.cmd`""
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"DNS reset successfully.`" -Title `"DNS Reset`" -LauncherID `"$ScriptDir\ResetDNS.cmd`""
 		#WorkingDirectory = ""
 	},
 	
@@ -63,9 +63,19 @@ $Tasks = @(
 		EventSource = "Notify-SwitchDNS-Failure"		
 		EventID = 1000									
 		TaskName = "USS-Notify-SwitchDNS-Failure"
-		TaskDescription = "Displays a toast notification when there is an error changing or resetting DNS. Version: 1.0"
+		TaskDescription = "Displays a toast notification when there is an error changing or resetting DNS. Version: 1.1"
 		Execute = "C:\Windows\System32\conhost.exe"
-		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"There was an error changing DNS settings.`" -Title `"Error`" -LauncherID `"C:\USS\Scripts\User\SwitchDNS\AddDNS.cmd`""
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"There was an error changing DNS settings.`" -Title `"Error`" -LauncherID `"$ScriptDir\ToggleDNS.cmd`""
+		#WorkingDirectory = ""
+	},
+	
+	@{
+		EventSource = "Notify-SwitchDNS-NoAction"		
+		EventID = 1000									
+		TaskName = "USS-Notify-SwitchDNS-NoAction"
+		TaskDescription = "Displays a toast notification when there is nothing to change. Version: 1.1"
+		Execute = "C:\Windows\System32\conhost.exe"
+		Argument = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Text `"DNS already added or removed. No action taken.`" -Title `"Error`" -LauncherID `"$ScriptDir\ToggleDNS.cmd`""
 		#WorkingDirectory = ""
 	}
 )

@@ -8,13 +8,11 @@
     3. The tasks run the applicable scripts
 .NOTES
 	Author: Matt Carras (mcarras8)
-	Created: 06-30-2026
+	Created: 09-02-2026
 	
-	How to trigger (run as any user):
+	Example trigger (run as any user):
 	
-	Write-EventLog -LogName 'USS-EventLog' -Source 'Enable-WiFi' -EventID 1000 -EntryType Information -Message 'Trigger Re-enable WiFi Adapters'
-	Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-Reenable_WiFi-Success' -EventID 1000 -EntryType Information -Message 'Notify of successful WiFi reenable'
-	Write-EventLog -LogName 'USS-EventLog' -Source 'Notify-Reenable_WiFi-Failure' -EventID 1000 -EntryType Information -Message 'Notify of failed WiFi reenable'
+	Write-EventLog -LogName 'USS-EventLog' -Source 'SwitchDNS-Add' -EventID 1000 -EntryType Information -Message 'Trigger Switch-DNS -Mode Add'
 #>
 # Requires Administrator privileges
 #Requires -RunAsAdministrator
@@ -84,6 +82,10 @@ $EventsAndTasks = @(
 	},
 	@{
 		EventSource = "Notify-SwitchDNS-Reverted"		
+		EventID = 1000
+	},
+	@{
+		EventSource = "Notify-SwitchDNS-NoAction"		
 		EventID = 1000
 	}
 )

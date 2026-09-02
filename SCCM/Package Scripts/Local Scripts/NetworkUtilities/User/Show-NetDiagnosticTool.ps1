@@ -34,7 +34,7 @@ $AddlPublicDNS = @(
 # Title for the form and message boxes.
 $UITitle = "IT Network Diagnostics"
 
-$LogDir = "C:\USS\Logs\User\SwitchDNS"
+$LogDir = "C:\USS\Logs\User\NetworkUtilities"
 # -- END Configuration --
 
 # Create the log path if it doesn't already exist
