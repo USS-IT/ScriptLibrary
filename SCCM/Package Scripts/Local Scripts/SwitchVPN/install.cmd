@@ -78,22 +78,11 @@ REM Log the rest of the output.
 	IF !ERRORLEVEL! NEQ 0 (
 		echo FATAL ERROR CODE [!ERRORLEVEL!], aborting
 	) ELSE (
+		REM Delete old shortcuts and install current ones.
+		del /f /q "%_STARTMENUFOLDER%\Connect to Always On VPN.lnk"
+		del /f /q "%_STARTMENUFOLDER%\Switch to General VPN.lnk"
 		echo Copying [Shortcuts\*] to [%_STARTMENUFOLDER%]...
 		copy "%~dp0Shortcuts\*" "%_STARTMENUFOLDER%" /V /Y
-			
-		REM Delete existing VPNUtilities shortcuts if they exist
-		IF EXIST "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Connect Always On VPN.lnk" (
-			echo Deleting [Connect Always On VPN.lnk]...
-			del /q /f "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Connect Always On VPN.lnk"
-		)
-		IF EXIST "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Pause Always On VPN.lnk" (
-			echo Deleting [Pause Always On VPN.lnk]...
-			del /q /f "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Pause Always On VPN.lnk"
-		)
-		IF EXIST "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Switch to General VPN.lnk" (
-			echo Deleting [Switch to General VPN.lnk]...
-			del /q /f "%ProgramData%\Microsoft\Windows\Start Menu\Programs\VPN Utilities\Switch to General VPN.lnk"
-		)
 	)
 	
 	echo ERRORLEVEL=!ERRORLEVEL!
